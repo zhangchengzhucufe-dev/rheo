@@ -241,3 +241,39 @@ def test_wrong_type_field_rejected():
     i = _idx(ev, "segment_start")
     ev = _mutated(ev, i, n_prompt_tokens="many")
     _expect_rules(ev, "E05")
+
+
+def test_birth_version_below_initial_rejected():
+    """中途挂载场景（initial_version>0）：birth_version 低于挂载版本是 E10。"""
+    ev = [
+        {
+            "ts": 1,
+            "type": "run_start",
+            "run_id": "r",
+            "format": "rheotrace-jsonl",
+            "schema_version": 0,
+            "initial_version": 5,
+            "engine": "hand",
+            "model": "m",
+            "clock": "wall_ns_epoch",
+        },
+        {
+            "ts": 2,
+            "type": "segment_start",
+            "run_id": "r",
+            "seg_id": "s1",
+            "group_id": "g1",
+            "birth_version": 3,  # < initial_version=5：run 开始时版本 3 已不存在
+            "t_start": 2,
+            "n_prompt_tokens": 10,
+        },
+        {"ts": 3, "type": "run_end", "run_id": "r", "summary": {}},
+    ]
+    _expect_rules(ev, "E10")
+
+
+def test_bool_ts_rejected():
+    """bool 是 int 子类，必须显式排除（True 冒充 ts=1）。"""
+    ev = _good()
+    ev[_idx(ev, "phase_span")]["ts"] = True
+    _expect_rules(ev, "E03")
