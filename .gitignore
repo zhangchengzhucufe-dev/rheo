@@ -221,3 +221,7 @@ __marimo__/
 bench/traces/*
 !bench/traces/.gitkeep
 
+
+# Rheo: bench/analysis 产出的报告不进 git（目录本身靠 .gitkeep 保留）
+bench/results/*
+!bench/results/.gitkeep
