@@ -16,6 +16,18 @@
 
 总调度与节拍表见 [TASKS.md](TASKS.md)。
 
+## RheoTrace（M1 冻结接口）
+
+rollout 追踪格式的规格见 [docs/rheotrace-spec-v0.md](docs/rheotrace-spec-v0.md)，
+`rheotrace` 包提供 write / read / validate 与合成 trace 生成器：
+
+```bash
+python -m rheotrace validate bench/traces/synthetic/*.jsonl   # 校验
+python -m rheotrace gen --preset bimodal --seed 7 --out t.jsonl  # 生成合成负载
+```
+
+合成样例在 `bench/traces/synthetic/`（grpo / bimodal 长尾 / agent env-wait 三档）。
+
 ## 开发
 
 ```bash
