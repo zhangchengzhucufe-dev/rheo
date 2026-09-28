@@ -21,7 +21,6 @@ from .core import (
     SEGMENT_LEVEL_PHASES,
     SEGMENT_START,
     SEGMENT_STATE,
-    SEGMENT_STATES,
     SYNC_MODES,
     TOKEN_LOGPROB,
     TRANSIENT_STATES,
@@ -341,7 +340,7 @@ def _check(source: Source, rep: ValidationReport) -> None:
                 rep.add_error("E08", f"段 {ev['seg_id']} 重复结束", line)
                 continue
             state, from_state = ev["state"], ev["from_state"]
-            if state not in SEGMENT_STATES or state not in {"finished", "aborted"}:
+            if state not in ("finished", "aborted"):
                 rep.add_error("E06", f"非法终态 {state!r}", line)
                 continue
             if from_state != seg.state:
