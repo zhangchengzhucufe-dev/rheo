@@ -53,6 +53,9 @@ SYNC_MODES = frozenset({"full", "delta", "load"})
 FINISH_MODES = frozenset({"exact", "shadow", "stale"})
 CLOCKS = frozenset({"wall_ns_epoch", "mono_ns_raw"})
 
+# 规格同步单调（§4.0）：区间型事件以结束时刻为信封 ts
+INTERVAL_END_TYPES = frozenset({WEIGHT_SYNC, PHASE_SPAN, SEGMENT_END})
+
 MS_NS = 1_000_000
 
 

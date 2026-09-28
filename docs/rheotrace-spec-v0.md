@@ -1,7 +1,8 @@
 # RheoTrace v0 格式规格（冻结稿）
 
-> 版本 v0.0 · 2026-09-29 · 会话 B 起草，供 A（verl 插桩）与 C（分析流水线）引用
+> 版本 v0.1 · 2026-09-29 · 会话 B 起草，供 A（verl 插桩）与 C（分析流水线）引用
 > 状态：**M1 核心接缝冻结**。字段与语义一经 merge 不再改动；只允许向后兼容的增量（见 §8）。
+> 修订：v0.1 校准 validator 规则表与实现的一致性（E01 措辞、新增 E18/W09 落实 §4.0 的 ts 约定），无字段/语义变更。
 > 关联：PLAN.md §1 L2 遥测 / §4 里程碑 M1；指标口径见 C 的 `docs/metrics-v0.md`。
 
 ---
@@ -288,7 +289,7 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 
 | # | 级别 | 规则 |
 |---|---|---|
-| E01 | E | 文件第一个事件必须是 `run_start`，最后必须是 `run_end`；全文件恰好一个 run |
+| E01 | E | 文件第一个事件必须是 `run_start`；全文件恰好一个 run（`run_end` 缺失按 W01 处理——最常见成因是截断，不按 E 级拒绝） |
 | E02 | E | 每个 JSON 行解析失败（末尾截断残行除外，见 W01） |
 | E03 | E | 公共信封缺失/类型错：`ts` 非 int、`type` 缺失、`run_id` 与 run_start 不一致 |
 | E04 | E | 事件 `ts` 相比前一事件**倒退**（乱序） |
@@ -305,6 +306,7 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 | E15 | E | `aborted` 段的 `segment_end` 缺 `reason` |
 | E16 | E | `run_end` 之后仍有事件 |
 | E17 | E | `weight_sync` 窗口与上一窗口重叠（`t_start` 早于上一 `t_end`） |
+| E18 | E | 区间型事件（weight_sync / phase_span / segment_end）的 `ts` 早于其 `t_end`——时间线矛盾（§4.0：区间事件以结束时刻为 ts） |
 | W01 | W | 文件无 `run_end` 结尾（截断）；末尾残行被 lenient 模式跳过 |
 | W02 | W | `run_end` 时仍有未终态的段（崩溃/未正常收尾） |
 | W03 | W | logprob 覆盖有洞（仅 `finished` 段：块未铺满 `[0, n_gen_tokens)`） |
@@ -313,6 +315,7 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 | W06 | W | 未知事件类型（前向兼容：新版本写的旧 reader 跳过并警告） |
 | W07 | W | 整个 run 没有任何 segment；或 run 没有任何 `weight_sync` 而有 segment 产出 |
 | W08 | W | run 内 `version` 跳变 >1（§5.2，提示可能漏同步） |
+| W09 | W | 区间型事件的 `ts` 晚于其 `t_end`（迟写/缓冲未及时 flush；时间核算仍以 `t_end` 为准）。`TraceWriter` 对区间型事件自动取 `t_end` 作 ts，合规默认 |
 
 validator 报告对象：`ValidationReport(ok, errors[], warnings[])`，每条含规则号、行号、事件摘要。
 `strict=True` 时存在任一 error 即抛 `ValidationError`（携带完整 report）。
@@ -367,24 +370,27 @@ import rheotrace
 rheotrace.FORMAT_NAME == "rheotrace-jsonl"
 rheotrace.FORMAT_VERSION == 0
 rheotrace.SEGMENT_STATES  # {"running","paused","env_wait","finished","aborted"}
-rheotrace.PHASES          # {"prefill","decode","env_wait","schedule"}
+rheotrace.PHASES  # {"prefill","decode","env_wait","schedule"}
 
 # 写：低层一次性落盘（测试/生成器用；纯序列化，不做校验）
-rheotrace.write(path, events)            # path 以 .gz 结尾自动压缩
+rheotrace.write(path, events)  # path 以 .gz 结尾自动压缩
 
 # 写：插桩用流式 writer（自动补 ts / run_id / run_start / run_end）
 w = rheotrace.TraceWriter(path, engine=..., model=..., meta={...})
 w.emit("weight_sync", version=1, t_start=..., t_end=..., mode="full")
-w.emit_raw({...})                        # 已构造好的 dict，补缺失的 ts/run_id
-w.close()                                # 落 run_end(summary)；支持 with 语法
+#   ts 自动填充：区间型事件（weight_sync/phase_span/segment_end）默认取 t_end（§4.0 合规默认），
+#   其余取当前时刻；显式传 ts 则尊重调用方
+w.emit_raw({...})  # 已构造好的 dict，补缺失的 ts/run_id
+w.close()  # 落 run_end(summary)；支持 with 语法；关闭后再 emit 报错
 
 # 读：无损还原事件列表（dict），支持 .gz
 events = rheotrace.read(path)
-for ev in rheotrace.iread(path): ...     # 流式逐行
+for ev in rheotrace.iread(path):
+    ...  # 流式逐行
 
 # 校验
-report = rheotrace.validate(path)        # 严格模式：有 error 抛 ValidationError(report)
-report = rheotrace.validate(path, strict=False)   # 宽松：返回报告不抛
+report = rheotrace.validate(path)  # 严格模式：有 error 抛 ValidationError(report)
+report = rheotrace.validate(path, strict=False)  # 宽松：返回报告不抛
 report.ok / report.errors / report.warnings
 
 # 合成

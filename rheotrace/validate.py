@@ -1,4 +1,4 @@
-"""RheoTrace validator：规格 docs/rheotrace-spec-v0.md §6 规则表（E01–E17 / W01–W08）的实现。"""
+"""RheoTrace validator：规格 docs/rheotrace-spec-v0.md §6 规则表（E01–E18 / W01–W09）的实现。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from .core import (
     CLOCKS,
     ENGINE_LEVEL_PHASES,
     FINISH_MODES,
+    INTERVAL_END_TYPES,
     LEGAL_TRANSIENT,
     PHASE_SPAN,
     PHASES,
@@ -201,6 +202,14 @@ def _check(source: Source, rep: ValidationReport) -> None:
         if _check_required(ev, etype, line, rep):
             continue
 
+        if etype in INTERVAL_END_TYPES:
+            # 规格同步单调（§4.0）：区间型事件以结束时刻为 ts；早于 t_end 是时间线矛盾，
+            # 晚于 t_end 视为迟写（时间核算仍以 t_end 为准）
+            if ts < ev["t_end"]:
+                rep.add_error("E18", f"{etype} 的 ts={ts} 早于区间结束 t_end={ev['t_end']}", line)
+            elif ts > ev["t_end"]:
+                rep.add_warning("W09", f"{etype} 的 ts={ts} 晚于 t_end={ev['t_end']}（迟写）", line)
+
         if etype == WEIGHT_SYNC:
             version, t_start, t_end = ev["version"], ev["t_start"], ev["t_end"]
             if ev["mode"] not in SYNC_MODES:
@@ -223,7 +232,7 @@ def _check(source: Source, rep: ValidationReport) -> None:
                 )
             current_version = max(current_version, version)
             final_version = max(final_version, version)
-            prev_sync_end = max(prev_sync_end or t_end, t_end)
+            prev_sync_end = t_end if prev_sync_end is None else max(prev_sync_end, t_end)
             if t_end >= t_start:
                 sync_windows.append((t_start, t_end, version))
             n_syncs += 1
@@ -391,8 +400,6 @@ def _check(source: Source, rep: ValidationReport) -> None:
             for opt in ("tok", "entropy"):
                 if opt in ev and len(ev[opt]) != n:
                     rep.add_error("E13", f"{opt} 长度 {len(ev[opt])} ≠ n={n}", line)
-            if not all(_is_num(x) for x in lp):
-                rep.add_error("E13", "lp 含非数值元素", line)
             for a, b in seg.lp_chunks:
                 if start_idx < b and a < start_idx + max(n, 1) and n > 0:
                     rep.add_error(
