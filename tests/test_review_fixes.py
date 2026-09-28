@@ -50,9 +50,12 @@ def test_writer_interval_events_take_t_end_as_ts(tmp_path):
 
 
 def test_writer_point_events_take_now_as_ts(tmp_path):
-    """点事件（segment_start）仍取当前时刻，且不早于其标记的时刻。"""
+    """点事件（segment_start）仍取当前时刻，且不早于其标记的时刻。
+
+    t_start 回退 1 分钟：即使 wall clock 因 NTP 微调回退，断言也不会偶发失败。
+    """
     path = tmp_path / "w.jsonl"
-    t_start = time.time_ns()
+    t_start = time.time_ns() - 60_000_000_000
     with rheotrace.TraceWriter(path, engine="e", model="m") as w:
         ev = w.emit(
             "segment_start",
