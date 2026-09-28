@@ -162,15 +162,11 @@ def _cut_plan(pl: dict, syncs: list[dict], p: GenParams, rng: random.Random) -> 
 
     顺序推进 floor_ts：env 等待被窗口顺延、running 区间被切后重排时，后续区间一律
     不得早于前一区间的实际结束——保证状态机在文件序下合法。
+    段起点是否落在同步窗口内由 _simulate 的 lane 推进负责，这里不再处理。
     """
-    ivs = pl["intervals"]
-    floor_ts = 0
-    for s in syncs:  # 段起点落在同步窗口内：整段推迟到窗口结束（不在同步中开段）
-        if s["t_start"] < ivs[0]["t0"] < s["t_end"]:
-            floor_ts = s["t_end"]
-            break
     out: list[tuple] = []
-    for iv0 in ivs:
+    floor_ts = pl["start"]
+    for iv0 in pl["intervals"]:
         if not p.pause_at_sync:  # 不参与安全点暂停：段原样冲过同步窗口（span 会触发 W04）
             out.append(("iv", dict(iv0)))
             continue
@@ -218,6 +214,9 @@ def _cut_plan(pl: dict, syncs: list[dict], p: GenParams, rng: random.Random) -> 
         out = out[: skip + 1]
         pl["aborted"] = True
         pl["abort_reason"] = "weight_skip"
+        pl["actual_end"] = out[skip][1]  # 在安全点被放弃，实际止于暂停时刻
+    else:
+        pl["actual_end"] = out[-1][1]["t1"]
     pl["script"] = out
     pl["gen_len"] = sum(it[1]["n"] for it in out if it[0] == "iv" and it[1]["kind"] == "decode")
 
@@ -368,25 +367,26 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
         meta={"preset": preset, "params": _jsonify(asdict(p))},
     )
 
-    lane_clock = [anchor] * p.n_workers
+    lane_end: dict[int, int] = {}  # pass 1：lane 的计划空闲时刻
     syncs: list[dict] = []
     seg_n = 0
     total_gen = 0
     n_segments = 0
+    plans: list[dict] = []
     for step in range(1, p.n_steps + 1):
         base_t = syncs[-1]["t_end"] if syncs else anchor
         gap = int(rng.uniform(*p.schedule_gap_ms) * MS_NS)
-        emit(base_t, "phase_span", phase="schedule", t_start=base_t, t_end=base_t + gap)
+        # 信封 ts 按规格 §4.0 取区间结束时刻
+        emit(base_t + gap, "phase_span", phase="schedule", t_start=base_t, t_end=base_t + gap)
         floor_t = base_t + gap  # 本步最早可开段时刻（调度间隙之后）
-        plans = []
         for i in range(p.groups_per_step * p.group_size):
             lane = i % p.n_workers
-            pl = _plan_segment(rng, p, max(lane_clock[lane], floor_t))
+            pl = _plan_segment(rng, p, max(lane_end.get(lane, anchor), floor_t))
             pl["lane"] = lane
             pl["group_id"] = f"g-{step:03d}-{i // p.group_size:03d}"
             pl["seg_id"] = f"s-{seg_n:06d}"
             seg_n += 1
-            lane_clock[lane] = pl["end"]
+            lane_end[lane] = pl["end"]
             plans.append(pl)
         if step < p.n_steps:
             # 同步放在本步"规划时长"的 straddle_frac 分位（不是绝对时刻的分位！），
@@ -405,9 +405,29 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
                     "prev_version": step - 1,
                 }
             )
-        for pl in plans:
+
+    # pass 2：按 lane 顺序推进实际时间线——被同步切断的段实际结束晚于计划端点，
+    # 同 lane 下一段必须等它真正跑完，且不得在同步窗口内开段
+    by_lane: dict[int, list[dict]] = {}
+    for pl in plans:  # plans 追加顺序 = 同 lane 内的时间顺序
+        by_lane.setdefault(pl["lane"], []).append(pl)
+    for lane in sorted(by_lane):
+        cursor = anchor
+        for pl in by_lane[lane]:
+            start = max(pl["start"], cursor)
+            for s in syncs:
+                if s["t_start"] < start < s["t_end"]:
+                    start = s["t_end"]  # 不在同步窗口内开段
+                    break
+            delta = start - pl["start"]
+            if delta:
+                for iv in pl["intervals"]:
+                    iv["t0"] += delta
+                    iv["t1"] += delta
+                pl["start"] = start
             _cut_plan(pl, syncs, p, rng)
             _emit_segment(emit, pl, syncs, p, rng)
+            cursor = max(cursor, pl["actual_end"])
             total_gen += pl["gen_len"]
             n_segments += 1
 
