@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Rheo: trace 文件可能很大，不进 git（报告与元数据进 bench/results/）
+bench/traces/*
+!bench/traces/.gitkeep
+
