@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
                 rep = validate(f, strict=not args.lenient)
             except ValidationError as e:
                 rep = e.report
+            except OSError as e:
+                print(f"{f}: 无法读取（{e.strerror or e}）")
+                rc = 2
+                continue
             verdict = "OK" if rep.ok else "REJECTED"
             print(f"{f}: {verdict} ({len(rep.errors)} errors, {len(rep.warnings)} warnings)")
             for i in rep.errors:

@@ -33,7 +33,7 @@ message SubmitGroupsReq {
 
 message Event {
   int64 ts = 1;                       // 公共信封，字段名与 spec §4.0 一一对应
-  string type = 2;                    // seven registered types; unknown → receiver must skip (W06 semantics)
+  string type = 2;                    // eight registered types; unknown → receiver must skip (W06 semantics)
   string run_id = 3;
   oneof payload {                     // 每个 spec 事件类型一条 message；字段名 = JSONL 键名
     RunStart      run_start = 10;
