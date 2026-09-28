@@ -372,13 +372,14 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
     seg_n = 0
     total_gen = 0
     n_segments = 0
-    plans: list[dict] = []
+    all_plans: list[dict] = []
     for step in range(1, p.n_steps + 1):
         base_t = syncs[-1]["t_end"] if syncs else anchor
         gap = int(rng.uniform(*p.schedule_gap_ms) * MS_NS)
         # 信封 ts 按规格 §4.0 取区间结束时刻
         emit(base_t + gap, "phase_span", phase="schedule", t_start=base_t, t_end=base_t + gap)
         floor_t = base_t + gap  # 本步最早可开段时刻（调度间隙之后）
+        step_plans: list[dict] = []
         for i in range(p.groups_per_step * p.group_size):
             lane = i % p.n_workers
             pl = _plan_segment(rng, p, max(lane_end.get(lane, anchor), floor_t))
@@ -387,13 +388,14 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
             pl["seg_id"] = f"s-{seg_n:06d}"
             seg_n += 1
             lane_end[lane] = pl["end"]
-            plans.append(pl)
+            step_plans.append(pl)
+        all_plans.extend(step_plans)
         if step < p.n_steps:
             # 同步放在本步"规划时长"的 straddle_frac 分位（不是绝对时刻的分位！），
             # 长尾段因此横跨同步窗口，被切出 pause/resume
             step_base = base_t + gap
             g_start = step_base + int(
-                (max(pl["end"] for pl in plans) - step_base) * p.straddle_frac
+                (max(pl["end"] for pl in step_plans) - step_base) * p.straddle_frac
             )
             if syncs:
                 g_start = max(g_start, syncs[-1]["t_end"] + MS_NS)
@@ -409,7 +411,7 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
     # pass 2：按 lane 顺序推进实际时间线——被同步切断的段实际结束晚于计划端点，
     # 同 lane 下一段必须等它真正跑完，且不得在同步窗口内开段
     by_lane: dict[int, list[dict]] = {}
-    for pl in plans:  # plans 追加顺序 = 同 lane 内的时间顺序
+    for pl in all_plans:  # all_plans 追加顺序 = 同 lane 内的时间顺序
         by_lane.setdefault(pl["lane"], []).append(pl)
     for lane in sorted(by_lane):
         cursor = anchor
