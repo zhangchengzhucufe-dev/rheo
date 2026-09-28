@@ -21,9 +21,9 @@ from .core import (
 
 
 def _open_sink(path: str | Path) -> Any:
-    """按后缀透明 gzip；返回带 close() 的文本句柄。"""
+    """按后缀透明 gzip（不区分大小写）；返回带 close() 的文本句柄。"""
     p = Path(path)
-    if p.suffix == ".gz":
+    if p.suffix.lower() == ".gz":
         return gzip.open(p, "wt", encoding="utf-8")
     return p.open("w", encoding="utf-8")
 

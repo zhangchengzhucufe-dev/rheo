@@ -12,9 +12,9 @@ from .core import RheotraceError
 
 
 def open_text(path: str | Path) -> Any:
-    """打开 trace 文本句柄；.gz 后缀自动解压。"""
+    """打开 trace 文本句柄；.gz 后缀（不区分大小写）自动解压。"""
     p = Path(path)
-    if p.suffix == ".gz":
+    if p.suffix.lower() == ".gz":
         return gzip.open(p, "rt", encoding="utf-8")
     return p.open("r", encoding="utf-8")
 

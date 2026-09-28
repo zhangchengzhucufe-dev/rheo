@@ -2,7 +2,7 @@
 
 由 `rheotrace.gen` 生成，格式见 `docs/rheotrace-spec-v0.md`。
 正常情况下 trace 不进 git（`.gitignore: bench/traces/*`）；这里三份小样例经 `git add -f`
-强制入库，供会话 C 在真实 trace 到位前开发与自测分析流水线。
+强制入库，供会话 C 在真实 trace 到位前开发与自测分析流水线。各约 340–500KB。
 
 | 文件 | 预置 | 负载形态 | 再生成命令 |
 |---|---|---|---|
