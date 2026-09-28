@@ -156,7 +156,7 @@ T_wall = T_active + T_pause
 |---|---|---|
 | **F1** | 基础统计 | n、mean、std、CV、min / P10 / P25 / P50 / P75 / P90 / P95 / P99 / max |
 | **F2** | 长尾比 | `P99/P50`、`max/P50`、**尾部 token 份额** = 长度 > P90 的轨迹的 token 数 / 总 token 数（partial rollout 收益面的第一度量） |
-| **F3** | 双峰检验 | Sarle 双峰系数 `BC = (g1² + 1) / (b2 + 3(n−1)²/((n−2)(n−3)))`，g1 为样本偏度、b2 为样本峰度（Pearson，非超额）。`BC > 5/9` 判双峰迹象；配合直方图（log 轴）人工复核。v0 不引入 scipy/Hartigan dip，BC + 直方图够用且零重依赖 |
+| **F3** | 双峰检验 | Sarle 双峰系数 `BC = (g1² + 1) / (γ2 + 3(n−1)²/((n−2)(n−3)))`，g1 为样本偏度、γ2 为超额峰度（m4/m2²−3）。`BC > 5/9` 判双峰迹象（5/9 恰为均匀分布的 BC 值）；配合直方图（log 轴）人工复核。v0 不引入 scipy/Hartigan dip，BC + 直方图够用且零重依赖 |
 | **F4** | 长度-时长散点 | 轨迹长度 vs 墙钟时长（图）。env 等待重的轨迹表现为"短长度、长时长"的离群带 |
 | **F5** | stale 暴露面 | `stale_token_share` = 生成时刻权重版本 ≠ 该轨迹 birth_version 的 token 份额。需要 trace 的版本时间线（§6）。这是"跨版本继续生成"机制收益上界的第一近似 |
 
