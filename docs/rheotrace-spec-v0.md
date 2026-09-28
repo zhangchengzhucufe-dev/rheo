@@ -289,14 +289,14 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 | # | 级别 | 规则 |
 |---|---|---|
 | E01 | E | 文件第一个事件必须是 `run_start`，最后必须是 `run_end`；全文件恰好一个 run |
-| E02 | E | 每个 JSON 行解析失败（末尾截断残行除外，见 E20/W01） |
+| E02 | E | 每个 JSON 行解析失败（末尾截断残行除外，见 W01） |
 | E03 | E | 公共信封缺失/类型错：`ts` 非 int、`type` 缺失、`run_id` 与 run_start 不一致 |
 | E04 | E | 事件 `ts` 相比前一事件**倒退**（乱序） |
 | E05 | E | 必填字段缺失或类型错误（按 §4 各表逐字段） |
 | E06 | E | 枚举值非法：`phase`、`state`、`mode`、`finish_mode`、`clock` 超出注册表 |
 | E07 | E | `seg_id` 引用了未 `segment_start` 的段；`seg_id` 重复开启 |
 | E08 | E | 状态机转换不合法（§2 表）；终态后仍有该段事件 |
-| E09 | E | 版本回退：`weight_sync.version` 未严格递增；`birth_version`/`version`(logprob) > 当前生效版本 |
+| E09 | E | 版本回退：`weight_sync.version` 未严格递增；`version`(logprob) 超前于当时账本；`birth_version` 超出 run 最终账本版本（文件尾统一检查——出生版本取决于首个 token 时刻，流式阶段不可判定） |
 | E10 | E | `birth_version` < `initial_version`；`segment_end.end_version` ≠ 当时账本版本 |
 | E11 | E | 区间非法：`t_end < t_start`（span / weight_sync / segment_end 一律） |
 | E12 | E | 段级 span 落在段生命周期之外（`t_start` 早于段开始或 `t_end` 晚于段结束）；engine 级 span 只允许 `schedule` |
@@ -304,7 +304,7 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 | E14 | E | logprob 块 `version` < 段的 `birth_version` |
 | E15 | E | `aborted` 段的 `segment_end` 缺 `reason` |
 | E16 | E | `run_end` 之后仍有事件 |
-| E17 | E | `t_end`（weight_sync）早于 `t_start` 上一版本同步（时间线矛盾） |
+| E17 | E | `weight_sync` 窗口与上一窗口重叠（`t_start` 早于上一 `t_end`） |
 | W01 | W | 文件无 `run_end` 结尾（截断）；末尾残行被 lenient 模式跳过 |
 | W02 | W | `run_end` 时仍有未终态的段（崩溃/未正常收尾） |
 | W03 | W | logprob 覆盖有洞（仅 `finished` 段：块未铺满 `[0, n_gen_tokens)`） |
