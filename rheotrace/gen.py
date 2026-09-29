@@ -369,6 +369,7 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
         engine="rheotrace-gen",
         model=p.model,
         clock="wall_ns_epoch",
+        n_workers=p.n_workers,  # 规格 §4.1：C 的 per-GPU 指标靠它（缺失按 1 卡算，T1 虚高）
         meta={"preset": preset, "params": _jsonify(asdict(p))},
     )
 
