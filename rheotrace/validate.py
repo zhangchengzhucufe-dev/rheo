@@ -371,8 +371,9 @@ def _check(source: Source, rep: ValidationReport) -> None:
                 continue
             if state == "finished" and seg.state != "running":
                 rep.add_error("E08", f"只有 running 可转入 finished，当前 {seg.state!r}", line)
-            if ev.get("finish_mode") is not None and ev["finish_mode"] not in FINISH_MODES:
-                rep.add_error("E06", f"非法 finish_mode: {ev['finish_mode']!r}", line)
+            fm = ev.get("finish_mode")
+            if fm is not None and (not isinstance(fm, str) or fm not in FINISH_MODES):
+                rep.add_error("E06", f"非法 finish_mode: {fm!r}", line)
             if state == "aborted" and not ev.get("reason"):
                 rep.add_error("E15", "aborted 段缺少 reason", line)
             if ev["t_end"] < seg.t_start:
