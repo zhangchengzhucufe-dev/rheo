@@ -380,8 +380,12 @@ def analyze(
         else:
             straggler_spans.extend(spans_b)
         ends = sorted(end[m] for m in members)
-        p50 = float(np.median(ends))
-        tail_ratio = (ends[-1] - p50) / p50 if p50 > 0 else 0.0
+        # 中位数保持整数域（float64 在 wall_ns_epoch 量级只有 ~256ns 精度）
+        n_e = len(ends)
+        p50 = ends[n_e // 2] if n_e % 2 else (ends[n_e // 2 - 1] + ends[n_e // 2]) // 2
+        # 相对批起点取比值：分母用绝对 epoch 时刻（wall_ns_epoch ~1.7e18ns）会退化成 ~1e-8 废值
+        span = p50 - bs
+        tail_ratio = (ends[-1] - p50) / span if span > 0 else 0.0
         batch_occs.append(BatchOcc(batch=bname, b0=b0, points=tuple(pts), tail_ratio=tail_ratio))
     batch_ranges.sort()
     for (_s0, s1_, _n1), (o0, _o1, _n2) in zip(batch_ranges, batch_ranges[1:], strict=False):

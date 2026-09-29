@@ -223,6 +223,23 @@ def test_stale_token_share():
     approx(a.stale_token_share, 500 / 1200)
 
 
+def test_s2_epoch_timestamp_not_degenerate():
+    """S2 批尾比必须取批内相对时间：epoch 时间戳（~1.7e18ns）下旧公式退化为 ~1e-8。"""
+    base = 1_727_600_000_000_000_000
+    events = [
+        hdr(),
+        ex("a", "b0", "prefill", base, base + 100, 0, 100),
+        ex("b", "b0", "prefill", base, base + 100, 0, 100),
+        ex("a", "b0", "decode", base + 100, base + 1_000_000, 0, 900_000),
+        ex("b", "b0", "decode", base + 100, base + 3_000_000, 0, 2_900_000),
+        {"ev": "traj_end", "traj": "a", "t": base + 1_000_000, "status": "finished"},
+        {"ev": "traj_end", "traj": "b", "t": base + 3_000_000, "status": "finished"},
+    ]
+    a = analyze(parse(events), peak_tflops=10.0)
+    # ends=[base+1e6, base+3e6]，p50=base+2e6，bs=base → ratio=(3e6−2e6)/(2e6−0)=0.5
+    approx(a.batch_occs[0].tail_ratio, 0.5)
+
+
 def test_sarle_bc():
     bimodal = np.array([1.0] * 50 + [10.0] * 10)
     assert _sarle_bc(bimodal) > BC_BIMODAL_THRESHOLD
@@ -565,3 +582,11 @@ def test_rheotrace_adapter_on_main_synthetic(tmp_path):
     out = tmp_path / "rep"
     assert main([str(bimodal), "--out", str(out)]) == 0
     assert (out / "report.md").exists()
+
+    # S2 跨批统计剔除单段批（tail_ratio 恒 0 会把跨批 P50 拉成 0）
+    out2 = tmp_path / "rep-bim"
+    assert main([str(bimodal), "--out", str(out2), "--no-figures"]) == 0
+    rep = (out2 / "report.md").read_text(encoding="utf-8")
+    assert "单段批不参与" in rep
+    s2_line = next(ln for ln in rep.splitlines() if "S2 批尾比" in ln)
+    assert "P50 = 0 " not in s2_line and "P50 = 0，" not in s2_line

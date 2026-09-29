@@ -145,13 +145,17 @@ def build_report(a: Analysis, figure_files: dict[str, str]) -> str:
             f"**S1 掉队份额**：T_straggler = {_f(a.t_straggler_s)} s，"
             f"占 T_active = {a.straggler_share:.1%}（阈值 occ<0.5）。"
         )
-    if a.batch_occs:
-        ratios = sorted(b.tail_ratio for b in a.batch_occs)
+    multi = [b for b in a.batch_occs if b.b0 >= 2]  # 单段批 tail_ratio 恒 0，不参与跨批统计
+    if multi:
+        ratios = sorted(b.tail_ratio for b in multi)
         p50 = float(np.median(ratios))
         p90 = float(np.percentile(ratios, 90))
-        L.append(
-            f"**S2 批尾比**：跨批 P50 = {_f(p50)}，P90 = {_f(p90)}（共 {len(a.batch_occs)} 批）。"
+        scope = (
+            f"{len(multi)}/{len(a.batch_occs)} 批（单段批不参与）"
+            if len(multi) < len(a.batch_occs)
+            else f"共 {len(multi)} 批"
         )
+        L.append(f"**S2 批尾比**：跨批 P50 = {_f(p50)}，P90 = {_f(p90)}（{scope}）。")
     L.append("")
     if "pause_waterfall" in figure_files:
         L.append(f"![pause waterfall](figures/{figure_files['pause_waterfall']})")
