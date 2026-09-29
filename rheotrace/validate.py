@@ -25,9 +25,10 @@ from .core import (
     TOKEN_LOGPROB,
     TRANSIENT_STATES,
     WEIGHT_SYNC,
+    RheotraceError,
     ValidationReport,
 )
-from .reader import open_text
+from .reader import _readline_lenient, open_text
 
 Source = str | Path | Iterable[dict]
 
@@ -94,25 +95,43 @@ class _Seg:
 
 
 def _iter_events(source: Source, rep: ValidationReport) -> Iterator[tuple[int, dict]]:
-    """统一来源：路径 → 行解析（含截断尾行处理 W01/E02）；可迭代 → 假定行号=序号。"""
+    """统一来源：路径 → 流式行解析（gzip 截断→W01、损坏→E02、末行残缺→W01）；可迭代 → 行号=序号。"""
     if isinstance(source, (str, Path)):
         with open_text(source) as fh:
-            raw = fh.readlines()
-        truncated_tail = bool(raw) and not raw[-1].endswith("\n")
-        for i, line in enumerate(raw, 1):
-            s = line.strip()
-            if not s:
-                continue
-            try:
-                yield i, json.loads(s)
-            except json.JSONDecodeError:
-                if i == len(raw) and truncated_tail:
-                    rep.add_warning("W01", "末尾残行无法解析，已跳过（文件截断）", i)
+            lineno = 0
+            while True:
+                try:
+                    line = _readline_lenient(fh)
+                except RheotraceError as e:
+                    if str(e).startswith("TRUNCATED"):
+                        rep.add_warning("W01", "gzip 流提前结束：文件截断")
+                    else:
+                        rep.add_error("E02", str(e).split(": ", 1)[1])
                     return
-                rep.add_error("E02", "JSON 行解析失败", i)
+                if not line:
+                    return
+                lineno += 1
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    yield lineno, json.loads(s)
+                except json.JSONDecodeError:
+                    try:
+                        nxt = _readline_lenient(fh)
+                    except RheotraceError as e:
+                        if str(e).startswith("TRUNCATED"):
+                            rep.add_warning("W01", "末行 JSON 残缺且随即流结束（截断）", lineno)
+                            return
+                        rep.add_error("E02", str(e).split(": ", 1)[1])
+                        return
+                    if nxt.strip():
+                        rep.add_error("E02", "JSON 行解析失败", lineno)
+                    else:
+                        rep.add_warning("W01", "末行 JSON 残缺（文件截断）", lineno)
+                        return
     else:
-        for i, ev in enumerate(source, 1):
-            yield i, ev
+        yield from enumerate(source, 1)
 
 
 def validate(source: Source, *, strict: bool = True) -> ValidationReport:
