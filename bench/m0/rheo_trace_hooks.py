@@ -46,34 +46,8 @@ def _now() -> int:
     return time.time_ns()
 
 
-def install() -> None:
-    if os.environ.get("RHEO_TRACE") != "1":
-        return
-
-    import verl.checkpoint_engine.base as ceb
+def _install_gen_hook():
     import verl.experimental.agent_loop.agent_loop as al
-    import verl.experimental.agent_loop.single_turn_agent_loop as stl
-
-    # ---- weight_sync: ColocatedCheckpointEngine.update_weights -------------
-    # 驱动侧普通类，同步调用；不打 worker 侧 ActorRolloutRefWorker —— 那里的
-    # @register 分发元数据被普通函数替换会让 RayWorkerGroup 找不到方法
-    # （'RayWorkerGroup' object has no attribute 'update_weights'）。
-    _orig_update_weights = ceb.ColocatedCheckpointEngine.update_weights
-
-    def traced_update_weights(self, global_steps: int = None):
-        t0 = _now()
-        result = _orig_update_weights(self, global_steps=global_steps)
-        spill(
-            "weight_sync",
-            version=int(global_steps or 0),
-            t_start=t0,
-            t_end=_now(),
-            mode="full",
-            trainer_step=int(global_steps or 0),
-        )
-        return result
-
-    ceb.ColocatedCheckpointEngine.update_weights = traced_update_weights
 
     # ---- engine-level schedule span around each generation step -----------
     _orig_mgr_gen = al.AgentLoopManager.generate_sequences
@@ -89,6 +63,11 @@ def install() -> None:
         return out
 
     al.AgentLoopManager.generate_sequences = traced_mgr_gen
+    print("[rheo-trace] hook: schedule spans (AgentLoopManager)", flush=True)
+
+
+def _install_segment_hook():
+    import verl.experimental.agent_loop.single_turn_agent_loop as stl
 
     # ---- per-segment lifecycle: SingleTurnAgentLoop.run --------------------
     _orig_loop_run = stl.SingleTurnAgentLoop.run
@@ -159,8 +138,46 @@ def install() -> None:
         return output
 
     stl.SingleTurnAgentLoop.run = traced_loop_run
+    print("[rheo-trace] hook: segment lifecycle (SingleTurnAgentLoop)", flush=True)
 
+
+def install() -> None:
+    for name, fn in [
+        ("weight_sync", _install_weight_sync_hook),
+        ("schedule", _install_gen_hook),
+        ("segment", _install_segment_hook),
+    ]:
+        try:
+            fn()
+        except Exception:
+            import traceback
+
+            print(f"[rheo-trace] hook {name} FAILED:", flush=True)
+            traceback.print_exc()
     spill("trace_boot", pid=os.getpid())
+
+
+def _install_weight_sync_hook():
+    import os  # noqa: F401
+    import verl.checkpoint_engine.base as ceb
+
+    _orig_update_weights = ceb.CheckpointEngineManager.update_weights
+
+    def traced_update_weights(self, global_steps: int = None):
+        t0 = _now()
+        result = _orig_update_weights(self, global_steps=global_steps)
+        spill(
+            "weight_sync",
+            version=int(global_steps or 0),
+            t_start=t0,
+            t_end=_now(),
+            mode="full",
+            trainer_step=int(global_steps or 0),
+        )
+        return result
+
+    ceb.CheckpointEngineManager.update_weights = traced_update_weights
+    print("[rheo-trace] hook: weight_sync (CheckpointEngineManager)", flush=True)
 
 
 install()
