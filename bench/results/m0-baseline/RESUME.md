@@ -42,6 +42,9 @@
 
 ## 运行期注意
 
+- **断电保护（正式跑已启用）**：`SAVE_FREQ=5`（默认）每 5 步存 checkpoint 到
+  `~/tools/rheo-checkpoints/<EXP>/`；中断后**重跑同一条命令**即可，verl 的
+  `resume_mode=auto` 自动从最新 checkpoint 续跑（loss/优化器状态都在）。断电最多损失 4 步。
 - GPU 锁：训练全程持 `with-lock gpu`；其他 AI 会话共用 GPU，慢是正常状况
 - 若 venv 重装/升级过 verl：三个补丁要重打（env.md 表格有逐个 diff 说明）
 - 下载一律先查两端 manifest；模型/数据集只放 ~/models、~/datasets

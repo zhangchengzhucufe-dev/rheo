@@ -3,8 +3,8 @@
 #
 # 必须经 GPU 锁运行:
 #   ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh
-# 冒烟(3 step):  STEPS=3 TEST_FREQ=-1 VAL_BEFORE_TRAIN=false EXP=smoke \
-#                  ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh
+# 每 5 步存一次 checkpoint 到 ~/tools/rheo-checkpoints/$EXP（防断电；
+# verl 的 resume_mode=auto 会自动从最新 checkpoint 续跑，重跑同一命令即可）
 #
 # 显存策略(6GB 卡 + Windows 桌面占用约 1-2.5GB):
 #   - 生成期 vLLM 独占 GPU(util=0.75 → KV ~1.5GB), util 太小(0.58)时 KV 仅
@@ -91,7 +91,7 @@ exec "$PYTHON" -m verl.trainer.main_ppo \
   trainer.total_epochs=10 \
   trainer.val_before_train="$VAL_BEFORE_TRAIN" \
   trainer.test_freq="$TEST_FREQ" \
-  trainer.save_freq=-1 \
+  trainer.save_freq="${SAVE_FREQ:-5}" \
   trainer.logger='[console,tensorboard]' \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \
