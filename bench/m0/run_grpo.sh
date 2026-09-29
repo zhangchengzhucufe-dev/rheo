@@ -46,6 +46,12 @@ export VERL_DISABLE_CUDA_IPC=1
 # 禁止 verl 运行时切换回经典池（device.py 本地补丁）
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export RHEO_KEEP_EXPANDABLE=1
+# RheoTrace 插桩（TASK-A step 3）：置 1 时每个 ray worker 进程经 sitecustomize
+# 加载 bench/m0/rheo_trace_hooks.py，事件落 $RHEO_TRACE_DIR/spill-<pid>.jsonl，
+# 训练结束后用 bench/m0/merge_trace.py 合并 + validate
+export RHEO_TRACE=${RHEO_TRACE:-0}
+export RHEO_TRACE_HOOKS="$REPO_DIR/bench/m0/rheo_trace_hooks.py"
+export RHEO_TRACE_DIR=${RHEO_TRACE_DIR:-$RESULTS/traces-spill}
 
 exec "$PYTHON" -m verl.trainer.main_ppo \
   data.train_files="$DATA_DIR/train.parquet" \

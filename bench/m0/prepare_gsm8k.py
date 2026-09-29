@@ -35,9 +35,7 @@ def make_map_fn(split: str):
 
 
 def main() -> None:
-    out_dir = os.environ.get(
-        "RHEO_DATA_DIR", os.path.expanduser("~/datasets/rheo/gsm8k")
-    )
+    out_dir = os.environ.get("RHEO_DATA_DIR", os.path.expanduser("~/datasets/rheo/gsm8k"))
     os.makedirs(out_dir, exist_ok=True)
 
     dataset = datasets.load_dataset("openai/gsm8k", "main")

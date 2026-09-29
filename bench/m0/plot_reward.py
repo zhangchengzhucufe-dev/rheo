@@ -56,9 +56,7 @@ def main() -> None:
     val_tags = pick(series, "val/")
     len_tags = pick(series, "response_length")
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(8, 7), sharex=True, height_ratios=[3, 1]
-    )
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True, height_ratios=[3, 1])
     for tag in sorted(train_tags):
         pts = series[tag]
         ax1.plot(*zip(*sorted(pts.items()), strict=True), marker="o", ms=3, label=f"train: {tag}")
