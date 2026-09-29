@@ -370,6 +370,42 @@ def test_rheotrace_adapter_gz(tmp_path):
     approx(a.thr_e2e, 280 / 0.310 / 2)
 
 
+def test_model_alias_no_13b_mismatch():
+    """规模别名子串匹配须有词边界："13b" 不得命中 "3b"（前缀是数字）。"""
+    import pytest
+
+    from bench.analysis.metrics import BUILTIN_MODELS, MetricsError, resolve_model_config
+
+    def mk(model: str):
+        h = hdr(model=model)
+        for k in ("P", "L", "d"):
+            h.pop(k)  # 剥掉内嵌参数，强制走模型名 → 内置表解析
+        return canon.parse_events([json.dumps(h), json.dumps(
+            ex("a", "b0", "decode", 0, 10, 0, 5))])
+
+    approx(resolve_model_config(mk("Synthetic-1.5B"), None).P, BUILTIN_MODELS["qwen2.5-1.5b"].P)
+    with pytest.raises(MetricsError):
+        resolve_model_config(mk("qwen-13b"), None)  # 13b 不在表内，且不得误配 3b
+    with pytest.raises(MetricsError):
+        resolve_model_config(mk("totally-unknown-model"), None)
+
+
+def test_partial_batch_annotation_falls_back_to_cluster(tmp_path):
+    """部分段有 batch_id 视同无标注：整体降级聚类，避免占用率口径失真。"""
+    import json
+
+    evs = _btrace_events()
+    # 给 s1 打批标注、s2 不打 → 部分标注
+    for e in evs:
+        if e.get("type") == "segment_start" and e["seg_id"] == "s1":
+            e["batch_id"] = "real-batch-0"
+    p = tmp_path / "partial.rheotrace.jsonl"
+    p.write_text("\n".join(json.dumps(e) for e in evs) + "\n", encoding="utf-8")
+    a = analyze(read_trace(p), peak_tflops=10.0)
+    assert any(w.startswith("W-NO-BATCH") for w in a.warnings)
+    assert all(b.batch.startswith("cluster-") for b in a.batch_occs)
+
+
 def test_rheotrace_adapter_on_main_synthetic(tmp_path):
     """main 上 B 已交付的合成 trace 全流程跑通（TASK-C 任务 3 用 B 的 trace）。"""
     syn = REPO / "bench" / "traces" / "synthetic"
@@ -385,6 +421,10 @@ def test_rheotrace_adapter_on_main_synthetic(tmp_path):
     assert a_bim.pause_totals["P1"] > 0  # weight_sync_ms=800 × 多步
     assert a_bim.sarle_bc == a_bim.sarle_bc and a_bim.sarle_bc > 5 / 9
     assert a_bim.tail_token_share > 0.2
+    # B 生成器为分 lane 流水派发，主伪批从未同时满员：其掉队不计入（不得虚报 100%）
+    assert a_bim.n_staggered_batches >= 1
+    assert a_bim.straggler_share == 0.0  # 其余为单段伪批，occ∈{0,1} 无掉队
+    assert any(w.startswith("W-BATCH-STAGGERED") for w in a_bim.warnings)
 
     a_grpo = analyze(read_trace(grpo))
     assert a_grpo.thr_e2e > 0
