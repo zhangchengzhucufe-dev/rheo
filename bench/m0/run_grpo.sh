@@ -27,6 +27,7 @@ RESULTS="$REPO_DIR/bench/results/m0-baseline"
 CKPT_DIR=${CKPT_DIR:-$HOME/tools/rheo-checkpoints}
 STEPS=${STEPS:-60}
 BATCH=${BATCH:-16}
+ROLLOUT_N=${ROLLOUT_N:-8}
 MAX_RESP=${MAX_RESP:-512}
 TEST_FREQ=${TEST_FREQ:-10}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-true}
@@ -102,7 +103,7 @@ while true; do
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.n=8 \
+  actor_rollout_ref.rollout.n="$ROLLOUT_N" \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
   actor_rollout_ref.rollout.calculate_log_probs=true \
   actor_rollout_ref.rollout.gpu_memory_utilization="$UTIL" \
