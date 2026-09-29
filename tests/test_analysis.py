@@ -520,6 +520,48 @@ def test_rheotrace_adapter_gz(tmp_path):
     approx(a.thr_e2e, 280 / 0.310 / 2)
 
 
+def test_model_config_and_header_peak(tmp_path):
+    """--model-config 优先于内置表；header 内嵌 peak 在无 CLI 覆盖时生效。"""
+    import json
+
+    cfg = tmp_path / "model.json"
+    cfg.write_text(json.dumps({"P": 2.0e9, "L": 30, "d": 2048}), encoding="utf-8")
+    evs = [hdr(peak_tflops=42.0)]  # header 自带 peak
+    h = evs[0]
+    for k in ("P", "L", "d"):
+        h.pop(k)  # 走 --model-config 分支
+    evs += [
+        ex("a", "b0", "decode", 0, 100, 0, 50),
+        {"ev": "traj_end", "traj": "a", "t": 100, "status": "finished"},
+    ]
+    tr = parse(evs)
+
+    a = analyze(tr, model_config_path=cfg)
+    assert (a.cfg.P, a.cfg.L, a.cfg.d) == (2.0e9, 30, 2048)
+    approx(a.peak_tflops, 42.0)  # 无 CLI 覆盖时用 header 值
+
+    a2 = analyze(tr, model_config_path=cfg, peak_tflops=7.5)
+    approx(a2.peak_tflops, 7.5)  # CLI 覆盖优先
+    assert a2.flops_total == a.flops_total  # FLOPs 只依赖几何
+    assert a2.m2_rollout != a.m2_rollout  # peak 不同 → MFU 不同
+
+
+def test_cli_error_exit_codes(tmp_path):
+    """CLI：文件不存在 / 模型不可解析 → 退出码 2 并走 stderr。"""
+
+    assert main([str(tmp_path / "nope.jsonl")]) == 2
+
+    bad = tmp_path / "bad.jsonl"
+    h = hdr(model="mystery-model-99b")
+    for k in ("P", "L", "d"):
+        h.pop(k)
+    bad.write_text(
+        json.dumps(h) + "\n" + json.dumps(ex("a", "b0", "decode", 0, 10, 0, 5)) + "\n",
+        encoding="utf-8",
+    )
+    assert main([str(bad)]) == 2
+
+
 def test_model_alias_no_13b_mismatch():
     """规模别名子串匹配须有词边界："13b" 不得命中 "3b"（前缀是数字）。"""
     import pytest
