@@ -382,6 +382,8 @@ w.emit("weight_sync", version=1, t_start=..., t_end=..., mode="full")
 #   其余取当前时刻；显式传 ts 则尊重调用方
 w.emit_raw({...})  # 已构造好的 dict，补缺失的 ts/run_id
 w.close()  # 落 run_end(summary)；支持 with 语法；关闭后再 emit 报错
+#   注意：TraceWriter 非线程安全。多 worker（DP rank）各写各的 trace 文件；
+#   若必须并发写同一文件，由调用方在外层串行化，且显式传 ts 保证有序
 
 # 读：无损还原事件列表（dict），支持 .gz
 events = rheotrace.read(path)

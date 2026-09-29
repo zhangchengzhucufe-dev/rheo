@@ -87,3 +87,12 @@ def test_gen_params_preset_override_isolation():
 def test_unknown_preset_raises():
     with pytest.raises(ValueError):
         rheotrace.generate(preset="nope")
+
+
+def test_degenerate_params_produce_valid_empty_trace():
+    """groups_per_step/group_size 为 0 不应崩溃：产出的空 run 过校验（W07 如实报告）。"""
+    for kw in ({"group_size": 0}, {"groups_per_step": 0}, {"n_steps": 0}):
+        ev = rheotrace.generate(preset="grpo", **kw)
+        rep = rheotrace.validate(ev, strict=False)
+        assert rep.ok
+        assert all(e["type"] != "segment_start" for e in ev)
