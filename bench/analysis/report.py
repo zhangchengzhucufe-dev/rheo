@@ -123,10 +123,15 @@ def build_report(a: Analysis, figure_files: dict[str, str]) -> str:
     if a.t_wall_s > 0:
         L.append(f"| 合计 T_pause | {_f(t_pause)} | 100% | {t_pause / a.t_wall_s:.1%} |")
     L.append("")
-    L.append(
-        f"**S1 掉队份额**：T_straggler = {_f(a.t_straggler_s)} s，"
-        f"占 T_active = {a.straggler_share:.1%}（阈值 occ<0.5）。"
-    )
+    if a.batch_occs and a.n_staggered_batches == len(a.batch_occs):
+        L.append(
+            "**S1 掉队份额**：不适用——伪批从未同时满员派发（见 §5 W-BATCH-STAGGERED），S1 置 0。"
+        )
+    else:
+        L.append(
+            f"**S1 掉队份额**：T_straggler = {_f(a.t_straggler_s)} s，"
+            f"占 T_active = {a.straggler_share:.1%}（阈值 occ<0.5）。"
+        )
     if a.batch_occs:
         ratios = sorted(b.tail_ratio for b in a.batch_occs)
         p50 = float(np.median(ratios))

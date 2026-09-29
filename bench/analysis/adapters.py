@@ -18,7 +18,8 @@ RheoTrace → canon 映射约定：
 - engine 级 schedule span 不映射（canon 的 P3 由"非 P1/P2 的 pause"推导）；
   run 首尾的 schedule/warmup 因此不计入 T_wall——这是有意的（不算预热/收尾空转）
 - spec 无 batch 概念：segment_start 若带 batch_id（可选增量，见 issues.md）则用之，
-  否则按轨迹时间重叠聚类出伪批（analyze 会打 W-NO-BATCH 警告）
+  否则按轨迹时间重叠聚类出伪批（analyze 会打 W-NO-BATCH 警告）；
+  **部分标注视同无标注**（批信息不完整则占用率口径失真，整体降级聚类）
 """
 
 from __future__ import annotations
@@ -119,7 +120,8 @@ def _rheotrace_to_canon(events: list[dict], path: Path) -> Trace:
         i = bisect_right(sync_ts, t) - 1
         return sync_ver[i] if i >= 0 else initial_ver
 
-    has_batch = any(v is not None for v in seg_batch.values())
+    # 批标注必须全量才算有：部分标注时无标注段拿不到批号，统一降级聚类更诚实
+    has_batch = bool(seg_batch) and all(v is not None for v in seg_batch.values())
     if not has_batch:
         seg_batch = _cluster_batches(events)
 
