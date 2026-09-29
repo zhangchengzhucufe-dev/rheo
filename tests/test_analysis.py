@@ -254,3 +254,128 @@ def test_cli_bimodal_end_to_end(tmp_path):
     stats = a.lengths_all_valid
     p99, p50 = np.percentile(stats, 99), np.percentile(stats, 50)
     assert p99 / p50 > 3
+
+
+# ---------------------------------------------------------------------------
+# 口径修正回归：P2 精确扫描（非中点近似）、T3 prefill 并集
+
+
+def test_p2_exact_sweep_partial_overlap():
+    # pause [300,600)：A env [300,600)，B env [300,500)。
+    # [300,500) 双双等待 → P2；[500,600) B 不在等待 → P3（中点近似会整体误判 P2）
+    events = [
+        hdr(),
+        ex("a", "b0", "prefill", 100, 200, 0, 100),
+        ex("b", "b0", "prefill", 100, 200, 0, 100),
+        ex("a", "b0", "decode", 200, 300, 0, 100),
+        ex("b", "b0", "decode", 200, 300, 0, 100),
+        {"ev": "env_wait", "traj": "a", "t0": 300, "t1": 600},
+        {"ev": "env_wait", "traj": "b", "t0": 300, "t1": 500},
+        ex("a", "b0", "decode", 600, 700, 0, 100),
+        ex("b", "b0", "decode", 600, 700, 0, 100),
+        {"ev": "traj_end", "traj": "a", "t": 700, "status": "finished"},
+        {"ev": "traj_end", "traj": "b", "t": 700, "status": "finished"},
+    ]
+    a = analyze(parse(events), peak_tflops=10.0)
+    approx(a.pause_totals["P2"], 200e-9)
+    approx(a.pause_totals["P3"], 100e-9)
+    approx(a.pause_totals["P1"], 0.0)
+
+
+def test_t3_prefill_union_not_sum():
+    # 两条轨迹并发 prefill [0,100)：GPU 只花 100ns，T3 = 256 token / 100ns
+    events = [
+        hdr(),
+        ex("a", "b0", "prefill", 0, 100, 0, 128),
+        ex("b", "b0", "prefill", 0, 100, 0, 128),
+        ex("a", "b0", "decode", 100, 200, 0, 50),
+        ex("b", "b0", "decode", 100, 200, 0, 50),
+        {"ev": "traj_end", "traj": "a", "t": 200, "status": "finished"},
+        {"ev": "traj_end", "traj": "b", "t": 200, "status": "finished"},
+    ]
+    a = analyze(parse(events), peak_tflops=10.0)
+    approx(a.thr_prefill, 256 / 100e-9)
+
+
+# ---------------------------------------------------------------------------
+# B 格式适配器：rheotrace-jsonl → canon（docs/rheotrace-spec-v0.md）
+
+
+def _btrace_events():
+    base = 1_727_600_000_000_000_000
+
+    def T(ms: int) -> int:
+        return base + ms * 1_000_000
+
+    return [
+        {"ts": T(0), "type": "run_start", "run_id": "r-t", "format": "rheotrace-jsonl",
+         "schema_version": 0, "initial_version": 0, "engine": "test", "n_workers": 2,
+         "model": "Qwen2.5-1.5B-Instruct", "clock": "wall_ns_epoch"},
+        {"ts": T(100), "type": "segment_start", "run_id": "r-t", "seg_id": "s1",
+         "group_id": "g1", "birth_version": 0, "t_start": T(100), "n_prompt_tokens": 112},
+        {"ts": T(110), "type": "phase_span", "run_id": "r-t", "seg_id": "s1",
+         "phase": "prefill", "t_start": T(100), "t_end": T(110), "n_tokens": 112},
+        {"ts": T(205), "type": "phase_span", "run_id": "r-t", "seg_id": "s1",
+         "phase": "decode", "t_start": T(110), "t_end": T(205), "n_tokens": 190},
+        {"ts": T(205), "type": "segment_end", "run_id": "r-t", "seg_id": "s1",
+         "state": "finished", "from_state": "running", "t_end": T(205),
+         "n_gen_tokens": 190, "birth_version": 0, "end_version": 0, "finish_mode": "exact"},
+        {"ts": T(290), "type": "weight_sync", "run_id": "r-t", "version": 1,
+         "t_start": T(210), "t_end": T(290), "mode": "full", "trainer_step": 1},
+        {"ts": T(300), "type": "segment_start", "run_id": "r-t", "seg_id": "s2",
+         "group_id": "g2", "birth_version": 1, "t_start": T(300), "n_prompt_tokens": 100},
+        {"ts": T(310), "type": "phase_span", "run_id": "r-t", "seg_id": "s2",
+         "phase": "prefill", "t_start": T(300), "t_end": T(310), "n_tokens": 100},
+        {"ts": T(410), "type": "phase_span", "run_id": "r-t", "seg_id": "s2",
+         "phase": "decode", "t_start": T(310), "t_end": T(410), "n_tokens": 90},
+        {"ts": T(410), "type": "segment_end", "run_id": "r-t", "seg_id": "s2",
+         "state": "finished", "from_state": "running", "t_end": T(410),
+         "n_gen_tokens": 90, "birth_version": 1, "end_version": 1, "finish_mode": "exact"},
+        {"ts": T(410), "type": "run_end", "run_id": "r-t",
+         "summary": {"segments": 2, "weight_syncs": 1, "gen_tokens": 280}},
+    ]
+
+
+def test_rheotrace_adapter_mapping(tmp_path):
+    import json
+
+    p = tmp_path / "b.rheotrace.jsonl"
+    p.write_text("\n".join(json.dumps(e) for e in _btrace_events()) + "\n", encoding="utf-8")
+    a = analyze(read_trace(p), peak_tflops=10.0)
+    # 真值（手算）：wall=T(100)..T(410)=310ms，active=[100,205)∪[300,410)=215ms，
+    # P1=sync[210,290)=80ms，P3=[205,210)+[290,300)=15ms
+    approx(a.t_wall_s, 0.310)
+    approx(a.t_active_s, 0.215)
+    approx(a.pause_totals["P1"], 0.080)
+    approx(a.pause_totals["P3"], 0.015)
+    approx(a.thr_e2e, 280 / 0.310 / 2)  # n_workers=2 → per-GPU
+    assert a.gen_tokens_all == 280
+    assert a.prompt_tokens == 212
+    assert a.stale_token_share == 0.0
+    assert a.waste == 0.0
+    assert any(w.startswith("W-NO-BATCH") for w in a.warnings)  # 无 batch 标注 → 聚类降级
+
+
+def test_rheotrace_adapter_on_main_synthetic(tmp_path):
+    """main 上 B 已交付的合成 trace 全流程跑通（TASK-C 任务 3 用 B 的 trace）。"""
+    syn = REPO / "bench" / "traces" / "synthetic"
+    bimodal = syn / "synthetic-bimodal-longtail.jsonl"
+    grpo = syn / "synthetic-grpo-small.jsonl"
+    if not bimodal.exists() or not grpo.exists():
+        import pytest
+
+        pytest.skip("bench/traces/synthetic 未就位")
+
+    a_bim = analyze(read_trace(bimodal))
+    assert a_bim.thr_e2e > 0
+    assert a_bim.pause_totals["P1"] > 0  # weight_sync_ms=800 × 多步
+    assert a_bim.sarle_bc == a_bim.sarle_bc and a_bim.sarle_bc > 5 / 9
+    assert a_bim.tail_token_share > 0.2
+
+    a_grpo = analyze(read_trace(grpo))
+    assert a_grpo.thr_e2e > 0
+
+    # CLI 一条命令直接吃 B 格式
+    out = tmp_path / "rep"
+    assert main([str(bimodal), "--out", str(out)]) == 0
+    assert (out / "report.md").exists()
