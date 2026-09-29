@@ -35,10 +35,12 @@ def _write_spill(spill_dir: Path) -> None:
     spill(1, t0 + 2000, type="phase_span", phase="schedule", t_start=t0 + 1000, t_end=t0 + 2000)
     spill(
         2,
-        t0 + 1500,
+        t0 + 2500,
         type="segment_start",
         seg_id="s-a",
         group_id="g-1",
+        # 真实钩子里 segment_start 是生成结束后补写的：ts 晚于 decode span 的
+        # t_end；merge 归一化排序后 segment_start 仍须排在 decode span 之前
         t_start=t0 + 1500,
         n_prompt_tokens=10,
     )

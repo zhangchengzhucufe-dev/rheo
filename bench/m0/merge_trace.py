@@ -56,11 +56,16 @@ def main() -> None:
     raw = load_spill(args.spill_dir)
     if not raw:
         raise SystemExit(f"no spill events under {args.spill_dir}")
+    # 先把区间事件的时间戳归一到 t_end（规格 §4.0），再排序——否则排序后被
+    # 改写的 ts 会重新失序（E04）
+    for ev in raw:
+        if ev["type"] in ("weight_sync", "phase_span", "segment_end"):
+            ev["ts"] = ev["t_end"]
     raw.sort(key=lambda e: e["ts"])
 
     # 1) rebuild ledger: weight_sync in t_end order, sequential versions
     syncs = sorted((e for e in raw if e["type"] == "weight_sync"), key=lambda e: e["t_end"])
-    ledger: list[tuple[int, int]] = []  # (t_end, version)
+    ledger: list[tuple[int, int]] = []
     for i, ev in enumerate(syncs, start=1):
         ledger.append((ev["t_end"], i))
 

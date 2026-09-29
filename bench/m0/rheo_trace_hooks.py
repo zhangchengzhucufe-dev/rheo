@@ -116,6 +116,7 @@ def _install_segment_hook():
                 "segment_start",
                 seg_id=seg_id,
                 group_id=group_id,
+                ts=t_seg_start,
                 t_start=t_seg_start,
                 n_prompt_tokens=n_prompt,
             )
