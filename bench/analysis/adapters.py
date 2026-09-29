@@ -11,7 +11,7 @@ A 的真实 trace 到位后只许改这里，不许改指标定义）。
 RheoTrace → canon 映射约定：
 - traj := seg_id（spec：一条轨迹 v0 记为同一个 segment，一一对应）
 - phase_span(prefill/decode) → exec；bv 按 weight_sync 账本在 t_start 的生效版本重放
-- phase_span.n_tokens 是分析必填语义（spec 标可选）：缺了直接报错，不静默估
+- phase_span.n_tokens：spec v0.1.1 起 prefill/decode 标 SHOULD（B 采纳 C 提议）；缺失即报错
 - segment_state 的 env_wait 状态区间 → env_wait；segment_end → traj_end
 - weight_sync → sync 区间 + ver_bump（新版本自 t_end 生效，spec §5.1）
 - abort 段的 decode token 全部 committed=False；re-prefill span 照实计入 prefill
@@ -142,8 +142,14 @@ def _rheotrace_to_canon(events: list[dict], path: Path) -> Trace:
         typ = e.get("type")
         ts = int(e["ts"])
         if typ == "weight_sync":
-            mapped.append({"ev": "sync", "t0": int(e["t_start"]), "t1": int(e["t_end"]),
-                           "ver": int(e["version"])})
+            mapped.append(
+                {
+                    "ev": "sync",
+                    "t0": int(e["t_start"]),
+                    "t1": int(e["t_end"]),
+                    "ver": int(e["version"]),
+                }
+            )
             mapped.append({"ev": "ver_bump", "t": int(e["t_end"]), "ver": int(e["version"])})
         elif typ == "phase_span":
             phase = e.get("phase")
@@ -154,7 +160,7 @@ def _rheotrace_to_canon(events: list[dict], path: Path) -> Trace:
             if n_tokens is None:
                 raise TraceError(
                     f"phase_span(seg={seg}, phase={phase}) 缺 n_tokens："
-                    "分析必需该字段（spec 标可选），请插桩端必填——见 docs/issues.md"
+                    "spec 标 SHOULD（v0.1.1），请插桩端必填"
                 )
             ev: dict = {
                 "ev": "exec",
@@ -186,9 +192,14 @@ def _rheotrace_to_canon(events: list[dict], path: Path) -> Trace:
             opened = env_open.pop(seg, None)
             if opened is not None:
                 mapped.append({"ev": "env_wait", "traj": seg, "t0": opened, "t1": int(e["t_end"])})
-            mapped.append({
-                "ev": "traj_end", "traj": seg, "t": int(e["t_end"]), "status": str(e["state"]),
-            })
+            mapped.append(
+                {
+                    "ev": "traj_end",
+                    "traj": seg,
+                    "t": int(e["t_end"]),
+                    "status": str(e["state"]),
+                }
+            )
         # run_start/run_end/token_logprob/未知类型：v0 指标不用，跳过
 
     # canon 要求事件按主时间非降序；同刻 ver_bump 必须先于 exec（bv 校验依赖）

@@ -34,8 +34,21 @@ def _stats_table(title: str, stats: dict[str, float]) -> list[str]:
     if stats.get("n", 0) == 0:
         return [f"**{title}**：无样本", ""]
     order = [
-        "n", "mean", "std", "cv", "min", "p10", "p25", "p50",
-        "p75", "p90", "p95", "p99", "max", "p99/p50", "max/p50",
+        "n",
+        "mean",
+        "std",
+        "cv",
+        "min",
+        "p10",
+        "p25",
+        "p50",
+        "p75",
+        "p90",
+        "p95",
+        "p99",
+        "max",
+        "p99/p50",
+        "max/p50",
     ]
     lines = [f"**{title}**", "", "| 统计量 | 值 |", "|---|---|"]
     for k in order:

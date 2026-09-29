@@ -20,12 +20,18 @@ def main(argv: list[str] | None = None) -> int:
         description="trace → rollout 分析报告（Markdown + 图），口径见 docs/metrics-v0.md",
     )
     p.add_argument("trace", help="trace 文件路径（JSONL）")
-    p.add_argument("--out", type=Path, default=None,
-                   help="输出目录（默认 bench/results/<trace名>-<起始t0ns>/）")
-    p.add_argument("--peak-tflops", type=float, default=None,
-                   help="实测 GEMM 峰值，覆盖默认/元数据峰值")
-    p.add_argument("--model-config", type=Path, default=None,
-                   help='模型参数 json：{"P":…,"L":…,"d":…}')
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="输出目录（默认 bench/results/<trace名>-<起始t0ns>/）",
+    )
+    p.add_argument(
+        "--peak-tflops", type=float, default=None, help="实测 GEMM 峰值，覆盖默认/元数据峰值"
+    )
+    p.add_argument(
+        "--model-config", type=Path, default=None, help='模型参数 json：{"P":…,"L":…,"d":…}'
+    )
     p.add_argument("--no-figures", action="store_true", help="只出 Markdown，不画图")
     args = p.parse_args(argv)
 
@@ -53,11 +59,15 @@ def main(argv: list[str] | None = None) -> int:
     report_path = write_report(analysis, out_dir, figure_files)
 
     print(f"T1 tokens/s/GPU（端到端）: {analysis.thr_e2e:.2f}")
-    print(f"M2 rollout MFU: {analysis.m2_rollout:.3f}"
-          f"  (M1 {analysis.m1_engine:.3f} × duty {analysis.duty:.3f})")
+    print(
+        f"M2 rollout MFU: {analysis.m2_rollout:.3f}"
+        f"  (M1 {analysis.m1_engine:.3f} × duty {analysis.duty:.3f})"
+    )
     t_pause = sum(analysis.pause_totals.values())
-    print(f"T_pause {t_pause:.3f}s / T_wall {analysis.t_wall_s:.3f}s；"
-          f"S1 掉队份额 {analysis.straggler_share:.1%}")
+    print(
+        f"T_pause {t_pause:.3f}s / T_wall {analysis.t_wall_s:.3f}s；"
+        f"S1 掉队份额 {analysis.straggler_share:.1%}"
+    )
     print(f"报告：{report_path}")
     return 0
 
