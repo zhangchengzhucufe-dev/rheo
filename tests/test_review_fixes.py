@@ -43,10 +43,10 @@ def test_writer_interval_events_take_t_end_as_ts(tmp_path):
     """TraceWriter 对区间型事件默认取 t_end 作 ts：插桩方无需手工传 ts 即合规。"""
     path = tmp_path / "w.jsonl"
     with rheotrace.TraceWriter(path, engine="e", model="m") as w:
-        w.emit("phase_span", seg_id="s1", phase="decode", t_start=10, t_end=20)
-    events = rheotrace.read(path)
-    span = next(e for e in events if e["type"] == "phase_span")
-    assert span["ts"] == 20  # 区间事件 → t_end，而不是 writer 构造时刻
+        base = w.run_start_ts
+        w.emit("phase_span", seg_id="s1", phase="decode", t_start=base + 10, t_end=base + 20)
+    span = rheotrace.read(path)[1]
+    assert span["ts"] == base + 20  # 区间事件 → t_end，而不是 writer 构造时刻
 
 
 def test_writer_point_events_take_now_as_ts(tmp_path):
@@ -80,3 +80,54 @@ def test_writer_emit_after_close_raises(tmp_path):
     w.close()
     with pytest.raises(RheotraceError):
         w.emit("phase_span", seg_id="s", phase="decode", t_start=0, t_end=1)
+
+
+def test_writer_rejects_foreign_clock_scale(tmp_path):
+    """混用时钟源（虚拟小数值 t_end vs 墙钟 run_start）必须在写入点报错，
+    而不是等到 validator 在离病因很远的位置报 E04。"""
+    with pytest.raises(RheotraceError, match="早于本 run 起始时刻"):
+        w = rheotrace.TraceWriter(tmp_path / "w.jsonl", engine="e", model="m")
+        w.emit("weight_sync", version=1, t_start=1000, t_end=2000, mode="full")
+
+
+def test_writer_same_scale_timestamps_ok(tmp_path):
+    """调用方显式传与墙钟同源的 ts（以 w.run_start_ts 为基准）：正常写入且过校验。"""
+    path = tmp_path / "w.jsonl"
+    with rheotrace.TraceWriter(path, engine="e", model="m") as w:
+        base = w.run_start_ts
+        w.emit("weight_sync", version=1, t_start=base + 1000, t_end=base + 2000, mode="full")
+    events = rheotrace.read(path)
+    assert events[1]["ts"] == base + 2000
+    assert rheotrace.validate(events, strict=False).ok
+
+
+def test_writer_close_end_ts_for_handwritten_timeline(tmp_path):
+    """手写时间线（全显式 ts）必须能控制 run_end 时刻，否则 close 的 auto-now 产生 E04。"""
+    path = tmp_path / "w.jsonl"
+    w = rheotrace.TraceWriter(path, engine="e", model="m")
+    base = w.run_start_ts
+    w.emit("weight_sync", version=1, t_start=base + 10**6, t_end=base + 2 * 10**6, mode="full")
+    w.emit(
+        "segment_start",
+        seg_id="s1",
+        group_id="g1",
+        birth_version=1,
+        t_start=base + 2 * 10**6,
+        n_prompt_tokens=16,
+        ts=base + 2 * 10**6,
+    )
+    w.emit(
+        "segment_end",
+        seg_id="s1",
+        state="finished",
+        from_state="running",
+        t_end=base + 3 * 10**6,
+        n_gen_tokens=0,
+        birth_version=1,
+        end_version=1,
+        ts=base + 3 * 10**6,
+    )
+    w.close(end_ts=base + 3 * 10**6 + 1)
+    events = rheotrace.read(path)
+    assert events[-1]["ts"] == base + 3 * 10**6 + 1
+    assert rheotrace.validate(events, strict=False).ok
