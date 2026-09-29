@@ -2,6 +2,10 @@
 
 只对 canon（见 bench/analysis/canon.py）计算，纯函数、无 IO。
 时间单位：内部一律 ns（整数），Analysis 输出的标量时间为秒（float）。
+
+性能注记：P2 停顿分类是 O(停顿基本块 × 轨迹数) 的精确扫描，实测
+47MB / 12 万事件（~1.1 万段）全流程 ~20s。M1 规模（单 run ≤ GB 级）
+可用；更大规模先分 run 或再优化扫描。
 """
 
 from __future__ import annotations
