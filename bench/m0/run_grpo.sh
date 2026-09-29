@@ -56,8 +56,8 @@ export RHEO_TRACE_DIR=${RHEO_TRACE_DIR:-$RESULTS/traces-spill}
 # rollout util 按启动时实际空闲显存动态算（Windows 桌面占用会波动，vLLM 0.12
 # 启动时检查 free < util*total 直接拒绝）。边距 0.6GB；若 vLLM 仍报 Free memory
 # 不足则降 0.06 重试，最低 0.55（KV 会小、生成会慢，但能跑）。
-UTIL=$("$PYTHON" -c "import torch; f,t=torch.cuda.mem_get_info(0); f/=2**30; t/=2**30; print(f'{min(0.72, max(0.55, (f-0.6)/t)):.2f}')")
-FREE=$("$PYTHON" -c "import torch; print(f'{torch.cuda.mem_get_info(0)[0]/2**30:.2f}')")
+UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "import torch; f,t=torch.cuda.mem_get_info(0); f/=2**30; t/=2**30; print(f'{min(0.72, max(0.55, (f-0.6)/t)):.2f}')")
+FREE=$(RHEO_TRACE=0 "$PYTHON" -c "import torch; print(f'{torch.cuda.mem_get_info(0)[0]/2**30:.2f}')")
 
 run_training() {
   "$PYTHON" -m verl.trainer.main_ppo "$@"
@@ -118,7 +118,7 @@ while true; do
     echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
     exit 1
   fi
-  UTIL=$("$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
+  UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
   sleep 10
 done
 

@@ -159,6 +159,7 @@ def install() -> None:
 
 def _install_weight_sync_hook():
     import os  # noqa: F401
+
     import verl.checkpoint_engine.base as ceb
 
     _orig_update_weights = ceb.CheckpointEngineManager.update_weights
