@@ -191,12 +191,17 @@ def _cut_plan(pl: dict, syncs: list[dict], p: GenParams, rng: random.Random) -> 
                 continue
             per_ms = p.prefill_ms_per_token if cur["kind"] == "prefill" else p.decode_ms_per_token
             n_head = int((gs - cur["t0"]) / (per_ms * MS_NS))
-            n_rem = cur["n"] - n_head
-            if n_head < 1 or n_rem < 1:
-                continue  # 切不出有意义的两段，视为冲过边界
-            out.append(("iv", {**cur, "t1": gs, "n": n_head}))
+            if n_head < 1:
+                # 边界落在首个 token 时长内：安全点原语仍然立即暂停（0 token 完成），
+                # 全部 token 移到窗口后续跑。冲过窗口是 pause_at_sync=False 的行为，
+                # 在 True 下会产出虚构的"窗口内解码"（validator W04 即症状）
+                n_head = 0
+            n_rem = cur["n"] - n_head  # gs < t1 ⇒ n_head < n ⇒ n_rem ≥ 1 恒成立
+            if n_head > 0:
+                out.append(("iv", {**cur, "t1": gs, "n": n_head}))
             out.append(("pause", gs))
-            if cur["kind"] == "decode" and rng.random() > p.resume_prob:
+            if cur["kind"] == "decode" and n_head > 0 and rng.random() > p.resume_prob:
+                # 0 token 完成时没有可放弃的产出，不构成 weight_skip
                 out.append(("weight_skip", gs, s["version"] - 1))
                 cur = None
                 break
@@ -420,8 +425,8 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
         for pl in by_lane[lane]:
             start = max(pl["start"], cursor)
             for s in syncs:
-                if s["t_start"] < start < s["t_end"]:
-                    start = s["t_end"]  # 不在同步窗口内开段
+                if s["t_start"] <= start < s["t_end"]:
+                    start = s["t_end"]  # 不在同步窗口内开段（== t_start 同样在暂停中，须闭左端）
                     break
             delta = start - pl["start"]
             if delta:

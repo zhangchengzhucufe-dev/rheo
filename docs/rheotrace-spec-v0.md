@@ -102,7 +102,7 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 - 浮点数 = JSON number（双精度）；**writer 必须以 `allow_nan=False` 序列化**（NaN/Inf 非法）。
 - writer 应当用紧凑分隔符与 `ensure_ascii=False`（体积与可读性）。
 - 文件名约定：`*.rheotrace.jsonl`，gzip 压缩时 `*.rheotrace.jsonl.gz`（reader/writer 按后缀透明处理）。
-- 每行必须以 `\n` 结尾；reader 遇到末尾无换行的残行视为截断（见 §6 E20）。
+- 每行必须以 `\n` 结尾；reader 遇到末尾无换行的残行视为截断（见 §6 W01）。
 - 时间戳一律 **纳秒整数**。`clock` 默认 `wall_ns_epoch`（`time.time_ns()`，跨进程可对齐 trainer 日志）。
   纯本机时长测量可用 `mono_ns_raw`（单调钟，跨进程不可比）。合成 trace 用虚拟钟（锚定生成时刻的 epoch 值），如实标注。
 
