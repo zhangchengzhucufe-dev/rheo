@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("trace", help="trace 文件路径（JSONL）")
     p.add_argument("--out", type=Path, default=None,
-                   help="输出目录（默认 bench/results/<trace名>-<日期>/）")
+                   help="输出目录（默认 bench/results/<trace名>-<起始t0ns>/）")
     p.add_argument("--peak-tflops", type=float, default=None,
                    help="实测 GEMM 峰值，覆盖默认/元数据峰值")
     p.add_argument("--model-config", type=Path, default=None,

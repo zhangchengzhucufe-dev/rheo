@@ -67,8 +67,12 @@ def resolve_model_config(trace: Trace, model_config_path: str | Path | None) -> 
         if key in BUILTIN_MODELS:
             return BUILTIN_MODELS[key]
         for size, full in MODEL_SIZE_ALIASES.items():
-            if size in key:
-                return BUILTIN_MODELS[full]
+            # 词边界防误配："13b" 含 "3b" 但前缀是数字 → 不算命中
+            start = key.find(size)
+            while start != -1:
+                if start == 0 or not key[start - 1].isdigit():
+                    return BUILTIN_MODELS[full]
+                start = key.find(size, start + 1)
     raise MetricsError(
         f"无法确定模型参数（P/L/d）：header.model={h.model!r} 不在内置表，"
         '请用 --model-config 提供 {"P":…,"L":…,"d":…}'
@@ -187,6 +191,7 @@ class Analysis:
     batch_occs: tuple[BatchOcc, ...]
     t_straggler_s: float
     straggler_share: float  # S1
+    n_staggered_batches: int  # 从未同时满员的伪批数（S1 对其不适用）
     # env 等待（轨迹级）
     env_wait_s: tuple[float, ...]  # 每轨迹总等待，秒
     env_wait_share: tuple[float, ...]  # 占该轨迹墙钟比例
@@ -332,6 +337,7 @@ def analyze(
     straggler_spans: list[tuple[int, int]] = []
     overlap_flag = False
     batch_ranges: list[tuple[int, int, str]] = []
+    n_staggered = 0
     for bname, members in sorted(batches.items()):
         b0 = len(members)
         events: list[tuple[int, int]] = []
@@ -341,24 +347,32 @@ def analyze(
         events.sort()
         bs, be = events[0][0], max(end[m] for m in members)
         batch_ranges.append((bs, be, bname))
-        # 阶梯扫描：0 < k < 0.5·B0 的时间即掉队
+        # 阶梯扫描：0 < k < 0.5·B0 的时间即掉队；峰值占用率到过 1.0（同时派发）才有效
         pts: list[tuple[int, float]] = [(bs, 0.0)]
         k = 0
+        max_occ = 0.0
         cur_span_start: int | None = None
+        spans_b: list[tuple[int, int]] = []
         for t, delta in events:
             prev_occ = k / b0
             k += delta
             occ = k / b0
             pts.append((t, occ))
+            max_occ = max(max_occ, occ)
             was_strag = 0 < prev_occ < STRAGGLER_OCC_THRESHOLD
             is_strag = 0 < occ < STRAGGLER_OCC_THRESHOLD
             if is_strag and not was_strag:
                 cur_span_start = t
             elif was_strag and not is_strag and cur_span_start is not None:
-                straggler_spans.append((cur_span_start, t))
+                spans_b.append((cur_span_start, t))
                 cur_span_start = None
         if cur_span_start is not None:
-            straggler_spans.append((cur_span_start, be))
+            spans_b.append((cur_span_start, be))
+        if max_occ < 1.0 - 1e-9:
+            # 伪批从未同时满员（如分 lane 流水派发）：占用率口径不适用，剔除
+            n_staggered += 1
+        else:
+            straggler_spans.extend(spans_b)
         ends = sorted(end[m] for m in members)
         p50 = float(np.median(ends))
         tail_ratio = (ends[-1] - p50) / p50 if p50 > 0 else 0.0
@@ -418,8 +432,16 @@ def analyze(
     if batch_occs and all(b.batch.startswith("cluster-") for b in batch_occs):
         warns.append(
             "W-NO-BATCH：trace 无 batch 标注，S1–S3 按轨迹时间重叠聚类近似"
-            "（偏乐观，可能低估掉队）；见 docs/issues.md 对 B 的 batch_id 增量请求"
+            "（方向不定，详见 W-BATCH-STAGGERED）；见 issues.md 对 B 的 batch_id 请求"
         )
+    if batch_occs and n_staggered == len(batch_occs):
+        warns.append(
+            "W-BATCH-STAGGERED：所有伪批从未同时满员派发（如分 lane 流水执行），"
+            "占用率/掉队口径不适用，S1 已置 0；待 batch_id 增量后恢复"
+        )
+    elif n_staggered:
+        warns.append(f"W-BATCH-STAGGERED：{n_staggered}/{len(batch_occs)} 个批从未同时满员，"
+                     "其掉队时间未计入 S1")
     if n_no_prefill:
         warns.append(
             f"W-NO-PREFILL：{n_no_prefill} 条轨迹有 decode 无 prefill，attention 项按 KV=0 估计"
@@ -455,6 +477,7 @@ def analyze(
         batch_occs=tuple(batch_occs),
         t_straggler_s=t_strag,
         straggler_share=straggler_share,
+        n_staggered_batches=n_staggered,
         env_wait_s=tuple(env_s),
         env_wait_share=tuple(env_share),
         traj_wall_s=tuple(traj_wall),
