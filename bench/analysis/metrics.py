@@ -27,12 +27,20 @@ class ModelConfig:
     d: int
 
 
-# 内置模型表：参数量为公开资料近似值，仅用于没带 model-config 的快速分析
+# 内置模型表：参数量为公开资料近似值，仅用于没带 model-config 的快速分析。
+# 键做子串匹配（大小写不敏感）：B 的合成 trace 模型名形如 "synthetic-1.5B"，
+# 按 "1.5b" 等规模记号落到对应几何；正式分析请用 --model-config 提供精确参数。
 BUILTIN_MODELS: dict[str, ModelConfig] = {
     "qwen2.5-0.5b": ModelConfig(P=0.49e9, L=24, d=896),
     "qwen2.5-1.5b": ModelConfig(P=1.54e9, L=28, d=1536),
     "qwen2.5-3b": ModelConfig(P=3.09e9, L=36, d=2048),
     "qwen2.5-7b": ModelConfig(P=7.62e9, L=28, d=3584),
+}
+MODEL_SIZE_ALIASES: dict[str, str] = {
+    "0.5b": "qwen2.5-0.5b",
+    "1.5b": "qwen2.5-1.5b",
+    "3b": "qwen2.5-3b",
+    "7b": "qwen2.5-7b",
 }
 
 # RTX 3060 FP16 稠密 tensor 峰值（数据表占位值，推荐 --peak-tflops 传实测 GEMM 峰值）
@@ -54,11 +62,16 @@ def resolve_model_config(trace: Trace, model_config_path: str | Path | None) -> 
     h = trace.header
     if h.params is not None:
         return ModelConfig(P=h.params.P, L=h.params.L, d=h.params.d)
-    if h.model and h.model.lower() in BUILTIN_MODELS:
-        return BUILTIN_MODELS[h.model.lower()]
+    if h.model:
+        key = h.model.lower().replace("_", "-")
+        if key in BUILTIN_MODELS:
+            return BUILTIN_MODELS[key]
+        for size, full in MODEL_SIZE_ALIASES.items():
+            if size in key:
+                return BUILTIN_MODELS[full]
     raise MetricsError(
         f"无法确定模型参数（P/L/d）：header.model={h.model!r} 不在内置表，"
-        "请用 --model-config 提供 {\"P\":…,\"L\":…,\"d\":…}"
+        '请用 --model-config 提供 {"P":…,"L":…,"d":…}'
     )
 
 
@@ -259,14 +272,28 @@ def analyze(
         spans.sort()
 
     pieces: list[PausePiece] = [PausePiece(a, b, "P1") for a, b in p1_spans]
-    for a, b in rest:
-        mid = (a + b) // 2
-        inflight = [tr for tr in trajs if birth[tr] <= mid < end[tr]]
-        if inflight and all(_covers(env_by_traj.get(tr, []), mid) for tr in inflight):
-            pieces.append(PausePiece(a, b, "P2"))
-        else:
-            pieces.append(PausePiece(a, b, "P3"))
-    pieces.sort(key=lambda p: (p.t0, p.t1))
+    for a0, b0 in rest:
+        # "所有在途轨迹同时 env_wait"的谓词只在这些边界点间变化：
+        # 出生/终止/env 进出，全部收进来做基本区间扫描（精确，不是中点近似）
+        pts = {a0, b0}
+        for tr in trajs:
+            if a0 < birth[tr] < b0:
+                pts.add(birth[tr])
+            if a0 < end[tr] < b0:
+                pts.add(end[tr])
+            for s, e2 in env_by_traj.get(tr, []):
+                if a0 < s < b0:
+                    pts.add(s)
+                if a0 < e2 < b0:
+                    pts.add(e2)
+        ts_sorted = sorted(pts)
+        for p, q in zip(ts_sorted, ts_sorted[1:], strict=False):
+            inflight = [tr for tr in trajs if birth[tr] <= p < end[tr]]
+            if inflight and all(_covers(env_by_traj.get(tr, []), p) for tr in inflight):
+                pieces.append(PausePiece(p, q, "P2"))
+            else:
+                pieces.append(PausePiece(p, q, "P3"))
+    pieces.sort(key=lambda p_: (p_.t0, p_.t1))
     pause_totals = {"P1": 0.0, "P2": 0.0, "P3": 0.0, "P4": 0.0}
     for p in pieces:
         pause_totals[p.label] += (p.t1 - p.t0) / 1e9
@@ -280,7 +307,9 @@ def analyze(
     # ---- 吞吐 -------------------------------------------------------------
     t_wall = (t1 - t0) / 1e9
     t_act = t_active / 1e9
-    prefill_dur = sum(e.t1 - e.t0 for e in execs if e.phase == PHASE_PREFILL) / 1e9
+    # T3 用 prefill 活跃区间的并集：并发 prefill 不能按段重复计时
+    prefill_union = merge_spans([(e.t0, e.t1) for e in execs if e.phase == PHASE_PREFILL])
+    prefill_dur = total_dur(prefill_union) / 1e9
     thr_e2e = gen_all / t_wall / world if t_wall > 0 else 0.0
     thr_active = gen_all / t_act / world if t_act > 0 else 0.0
     thr_prefill = prompt_tokens / prefill_dur / world if prefill_dur > 0 else 0.0
@@ -386,6 +415,11 @@ def analyze(
     p4_share = pause_totals["P4"] / t_wall if t_wall > 0 else 0.0
     if p4_share > 0.01:
         warns.append("Q1：P4 other 占墙钟 >1%，通常意味着 trace 字段不足")
+    if batch_occs and all(b.batch.startswith("cluster-") for b in batch_occs):
+        warns.append(
+            "W-NO-BATCH：trace 无 batch 标注，S1–S3 按轨迹时间重叠聚类近似"
+            "（偏乐观，可能低估掉队）；见 docs/issues.md 对 B 的 batch_id 增量请求"
+        )
     if n_no_prefill:
         warns.append(
             f"W-NO-PREFILL：{n_no_prefill} 条轨迹有 decode 无 prefill，attention 项按 KV=0 估计"
