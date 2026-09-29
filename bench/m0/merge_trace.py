@@ -121,6 +121,36 @@ def main() -> None:
         if ev["type"] == "token_logprob":
             ev["lp"] = [v if math.isfinite(v) else -1e30 for v in ev.get("lp", [])]
 
+    # 2.6) 引擎级 schedule span：由段边界推导（批间空转 = 上一版段最晚结束 →
+    # 下一版段最早开始）。manager 级钩子在真实运行中静默不触发，段事件天然
+    # 携带边界，merge 推导更可靠且少一个 verl 内部补丁面
+    derived_spans = []
+    by_birth: dict[int, list[dict]] = {}
+    for ev in raw:
+        if ev["type"] == "segment_start":
+            by_birth.setdefault(ev.get("birth_version", 0), []).append(ev)
+        elif ev["type"] == "segment_end":
+            by_birth.setdefault(effective_version(ev["t_end"]), []).append(ev)
+    births_sorted = sorted(b for b in by_birth if b > 0)
+    for prev_b, next_b in zip(births_sorted, births_sorted[1:], strict=False):
+        prev_ends = [e["t_end"] for e in by_birth[prev_b] if e["type"] == "segment_end"]
+        next_starts = [e["t_start"] for e in by_birth[next_b] if e["type"] == "segment_start"]
+        if not prev_ends or not next_starts:
+            continue
+        gap_start, gap_end = max(prev_ends), min(next_starts)
+        if gap_end >= gap_start:
+            derived_spans.append(
+                {
+                    "type": "phase_span",
+                    "phase": "schedule",
+                    "ts": gap_end,
+                    "t_start": gap_start,
+                    "t_end": gap_end,
+                }
+            )
+    raw.extend(derived_spans)
+    raw.sort(key=lambda e: e["ts"])
+
     # 3) emit final trace
     run_start = {
         "type": "run_start",

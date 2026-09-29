@@ -12,8 +12,8 @@ derive per-segment birth/end_version).
 Patched sites:
 - CheckpointEngineManager.update_weights -> weight_sync (driver side; worker
   side carries @register dispatch metadata that a plain function would break)
-- AgentLoopManager.generate_sequences    -> engine-level schedule span per
-  step (plain function: the original is @auto_await and fit() calls it sync)
+(schedule spans are derived at merge time from segment boundaries — the
+manager-level hook for them kept silently not firing and was removed)
 - SingleTurnAgentLoop.run                -> segment lifecycle + decode span +
   token_logprob chunk; the LLMServerClient.generate timing is captured via a
   ContextVar so concurrent per-sample tasks don't stomp each other
@@ -33,6 +33,9 @@ from pathlib import Path
 
 TRACE_DIR = Path(os.environ.get("RHEO_TRACE_DIR", "/tmp/rheo-trace"))
 FORMAT = "rheo-trace-spill-1"
+
+_GEN_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_gen_timing", default=None)
+_WORKER_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_worker_ctx", default=None)
 
 
 def _spill_path() -> Path:
@@ -75,42 +78,6 @@ def _install_weight_sync_hook():
 
     ceb.CheckpointEngineManager.update_weights = traced_update_weights
     print("[rheo-trace] hook: weight_sync (CheckpointEngineManager)", flush=True)
-
-
-def _install_gen_hook():
-    import inspect
-
-    import verl.experimental.agent_loop.agent_loop as al
-
-    # ---- engine-level schedule span around each generation step -----------
-    # 原方法带 @auto_await：fit() 是同步调用（无事件循环时内部 asyncio.run），
-    # 钩子必须是普通函数；异步上下文时包装 coroutine 保住完成时序
-    _orig_mgr_gen = al.AgentLoopManager.generate_sequences
-
-    def traced_mgr_gen(self, prompts):
-        now = _now()
-        prev = getattr(self, "_rheo_prev_gen_end", None)
-        if prev is not None and now >= prev:
-            spill("phase_span", phase="schedule", t_start=prev, t_end=now)
-        self._rheo_prev_gen_end = None
-        result = _orig_mgr_gen(self, prompts)
-        if inspect.iscoroutine(result):
-
-            async def _afinish():
-                out = await result
-                self._rheo_prev_gen_end = _now()
-                return out
-
-            return _afinish()
-        self._rheo_prev_gen_end = _now()
-        return result
-
-    al.AgentLoopManager.generate_sequences = traced_mgr_gen
-    print("[rheo-trace] hook: schedule spans (AgentLoopManager)", flush=True)
-
-
-_GEN_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_gen_timing", default=None)
-_WORKER_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_worker_ctx", default=None)
 
 
 def _install_gen_timing_hook():
@@ -242,7 +209,6 @@ def _install_segment_hook():
 def install() -> None:
     for name, fn in [
         ("weight_sync", _install_weight_sync_hook),
-        ("schedule", _install_gen_hook),
         ("segment", _install_segment_hook),
         ("generate timing", _install_gen_timing_hook),
         ("worker ctx", _install_worker_ctx_hook),

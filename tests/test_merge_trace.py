@@ -215,3 +215,93 @@ def test_validate_rejects_broken_trace(tmp_path: Path) -> None:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+def test_merge_derives_schedule_spans(tmp_path: Path) -> None:
+    """schedule span = gap between one version's last segment end and the next
+    version's earliest segment start (engine-level, no seg_id)."""
+    spill_dir = tmp_path / "spill"
+    spill_dir.mkdir()
+    t0 = time_ns()
+
+    def spill(pid: int, ts: int, **ev: dict) -> None:
+        ev.update({"type": ev.get("type"), "ts": ts, "fmt": "x", "pid": pid})
+        with open(spill_dir / f"spill-{pid}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+
+    spill(
+        1,
+        t0 + 500,
+        type="weight_sync",
+        version=1,
+        t_start=t0,
+        t_end=t0 + 500,
+        mode="full",
+        trainer_step=1,
+    )
+    # v1 段：结束于 t0+1000
+    spill(
+        2,
+        t0 + 600,
+        type="segment_start",
+        seg_id="s-a",
+        group_id="g-1",
+        t_start=t0 + 600,
+        n_prompt_tokens=5,
+    )
+    spill(
+        2,
+        t0 + 1000,
+        type="segment_end",
+        seg_id="s-a",
+        state="finished",
+        from_state="running",
+        t_end=t0 + 1000,
+        n_gen_tokens=3,
+    )
+    # v2 同步 + v2 段：最早开始于 t0+1500
+    spill(
+        3,
+        t0 + 1200,
+        type="weight_sync",
+        version=2,
+        t_start=t0 + 1000,
+        t_end=t0 + 1200,
+        mode="full",
+        trainer_step=2,
+    )
+    spill(
+        2,
+        t0 + 1500,
+        type="segment_start",
+        seg_id="s-b",
+        group_id="g-2",
+        t_start=t0 + 1500,
+        n_prompt_tokens=5,
+    )
+    spill(
+        2,
+        t0 + 1800,
+        type="segment_end",
+        seg_id="s-b",
+        state="finished",
+        from_state="running",
+        t_end=t0 + 1800,
+        n_gen_tokens=2,
+    )
+
+    out = tmp_path / "trace.jsonl"
+    subprocess.run(
+        [sys.executable, str(MERGE), "--spill-dir", str(spill_dir), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    sched = [e for e in events if e["type"] == "phase_span" and e["phase"] == "schedule"]
+    assert len(sched) == 1
+    # gap = v1 段最晚结束(t0+1000) -> v2 段最早开始(t0+1500)
+    assert sched[0]["t_start"] == t0 + 1000 and sched[0]["t_end"] == t0 + 1500
+    assert "seg_id" not in sched[0], "schedule is engine-level (no seg_id)"
+    r = validate(out, strict=False)
+    assert r.ok
