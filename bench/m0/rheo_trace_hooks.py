@@ -106,13 +106,19 @@ def _install_gen_timing_hook():
 
 
 def _install_worker_ctx_hook():
+
     import verl.experimental.agent_loop.agent_loop as al
 
     _orig_worker_gen = al.AgentLoopWorker.generate_sequences
 
     async def traced_worker_gen(self, batch):
+        # ContextVar 经 sys.modules 取用而非闭包捕获：AgentLoopWorker 是 ray
+        # actor 类，ray.remote() 会序列化类定义，闭包里的 ContextVar 不可 pickle
+        import sys as _sys
+
+        cv = _sys.modules["rheo_trace_hooks"]._WORKER_CV
         meta = getattr(batch, "meta_info", None) or {}
-        tok = _WORKER_CV.set(
+        tok = cv.set(
             {
                 "validate": bool(meta.get("validate", False)),
                 "global_steps": meta.get("global_steps", None),
@@ -121,7 +127,7 @@ def _install_worker_ctx_hook():
         try:
             return await _orig_worker_gen(self, batch)
         finally:
-            _WORKER_CV.reset(tok)
+            cv.reset(tok)
 
     al.AgentLoopWorker.generate_sequences = traced_worker_gen
     print("[rheo-trace] hook: worker ctx (AgentLoopWorker)", flush=True)
