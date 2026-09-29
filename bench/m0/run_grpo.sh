@@ -71,6 +71,8 @@ FREE=$(RHEO_TRACE=0 "$PYTHON" -c "import torch; print(f'{torch.cuda.mem_get_info
 run_training() {
   "$PYTHON" -m verl.trainer.main_ppo "$@"
 }
+# calculate_log_probs=true: vLLM 返回 token logprobs（trace 带 token_logprob，W03 消失）；
+# 默认 decoupled 模式下 actor 仍重算 old_log_probs，训练语义不变
 
 while true; do
   echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE)"
@@ -102,6 +104,7 @@ while true; do
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.n=8 \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.calculate_log_probs=true \
   actor_rollout_ref.rollout.gpu_memory_utilization="$UTIL" \
   actor_rollout_ref.rollout.enforce_eager=true \
   actor_rollout_ref.rollout.max_model_len=1024 \

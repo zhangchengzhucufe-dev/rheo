@@ -107,6 +107,7 @@ def _install_gen_hook():
 
 
 _GEN_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_gen_timing", default=None)
+_WORKER_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_worker_ctx", default=None)
 
 
 def _install_gen_timing_hook():
@@ -134,6 +135,28 @@ def _install_gen_timing_hook():
     print("[rheo-trace] hook: generate timing (LLMServerClient)", flush=True)
 
 
+def _install_worker_ctx_hook():
+    import verl.experimental.agent_loop.agent_loop as al
+
+    _orig_worker_gen = al.AgentLoopWorker.generate_sequences
+
+    async def traced_worker_gen(self, batch):
+        meta = getattr(batch, "meta_info", None) or {}
+        tok = _WORKER_CV.set(
+            {
+                "validate": bool(meta.get("validate", False)),
+                "global_steps": meta.get("global_steps", None),
+            }
+        )
+        try:
+            return await _orig_worker_gen(self, batch)
+        finally:
+            _WORKER_CV.reset(tok)
+
+    al.AgentLoopWorker.generate_sequences = traced_worker_gen
+    print("[rheo-trace] hook: worker ctx (AgentLoopWorker)", flush=True)
+
+
 def _install_segment_hook():
     import verl.experimental.agent_loop.single_turn_agent_loop as stl
 
@@ -156,6 +179,15 @@ def _install_segment_hook():
         output = await _orig_loop_run(self, sampling_params, **kwargs)
 
         try:
+            wctx = _WORKER_CV.get() or {}
+            seg_meta = {
+                k: v
+                for k, v in (
+                    ("validate", wctx.get("validate")),
+                    ("global_steps", wctx.get("global_steps")),
+                )
+                if v is not None
+            }
             n_prompt = len(output.prompt_ids)
             n_gen = len(output.response_ids)
             spill(
@@ -165,6 +197,7 @@ def _install_segment_hook():
                 ts=t_seg_start,
                 t_start=t_seg_start,
                 n_prompt_tokens=n_prompt,
+                meta=seg_meta,
             )
             if gen["t0"] is not None and gen["t1"] is not None:
                 spill(
@@ -193,6 +226,7 @@ def _install_segment_hook():
                 from_state="running",
                 t_end=max(_now(), gen["t1"] or t_seg_start),
                 n_gen_tokens=n_gen,
+                meta=seg_meta,
             )
         except Exception:
             pass
@@ -208,6 +242,7 @@ def install() -> None:
         ("schedule", _install_gen_hook),
         ("segment", _install_segment_hook),
         ("generate timing", _install_gen_timing_hook),
+        ("worker ctx", _install_worker_ctx_hook),
     ]:
         try:
             fn()
