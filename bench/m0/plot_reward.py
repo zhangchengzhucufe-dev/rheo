@@ -2,8 +2,8 @@
 
 Usage: python bench/m0/plot_reward.py [--tb-dir DIR] [--out PNG]
 
-Reads every event file under the tensorboard dir (verl layout:
-$TENSORBOARD_DIR/<project>/<experiment>/events.out.*), extracts scalar tags
+Reads every event file under the tensorboard dir (verl writes flat into
+$TENSORBOARD_DIR, which run_grpo.sh sets per-experiment), extracts scalar tags
 related to reward/score/length, and renders one figure: training reward and
 validation score vs global step.
 """

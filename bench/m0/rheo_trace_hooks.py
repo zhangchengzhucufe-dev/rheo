@@ -18,7 +18,7 @@ Patched sites:
   token_logprob chunk; the LLMServerClient.generate timing is captured via a
   ContextVar so concurrent per-sample tasks don't stomp each other.
 
-No-op (zero imports beyond os) unless RHEO_TRACE=1.
+No-op (stdlib-only imports) unless RHEO_TRACE=1.
 """
 
 import contextvars
@@ -144,8 +144,12 @@ def _install_segment_hook():
 
         t_seg_start = _now()
         seg_id = f"s-{uuid4().hex[:12]}"
-        info = kwargs.get("extra_info") or {}
-        group_id = f"g-{info.get('index', id(kwargs.get('raw_prompt')) & 0xFFFF):08d}"
+        # group_id 解析失败绝不能把异常传进 verl（会杀掉样本），降级到未知组
+        try:
+            info = kwargs.get("extra_info") or {}
+            group_id = f"g-{int(info.get('index')):08d}"
+        except Exception:
+            group_id = "g-unknown"
 
         gen = {"t0": None, "t1": None}
         _GEN_CV.set(gen)

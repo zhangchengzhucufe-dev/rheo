@@ -7,7 +7,7 @@
 # verl 的 resume_mode=auto 会自动从最新 checkpoint 续跑，重跑同一命令即可）
 #
 # 显存策略(6GB 卡 + Windows 桌面占用约 1-2.5GB):
-#   - 生成期 vLLM 独占 GPU(util=0.75 → KV ~1.5GB), util 太小(0.58)时 KV 仅
+#   - 生成期 vLLM 独占 GPU(util≤0.72, 动态; KV ~1.2GB), util 太小时 KV 不足,
 #     ~0.5GB, 生成陷入抢占-重算循环(实测 35min 跑不完一步)
 #   - 训练期 vLLM sleep level 2 全量释放, FSDP 装载 3.1GB 主干
 #   - lora.merge=true: 每步把 LoRA 合并进基础权重同步给 vLLM → sleep level 2
