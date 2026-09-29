@@ -50,16 +50,19 @@ def install() -> None:
     if os.environ.get("RHEO_TRACE") != "1":
         return
 
+    import verl.checkpoint_engine.base as ceb
     import verl.experimental.agent_loop.agent_loop as al
     import verl.experimental.agent_loop.single_turn_agent_loop as stl
-    import verl.workers.engine_workers as ew
 
-    # ---- weight_sync: ActorRolloutRefWorker.update_weights -----------------
-    _orig_update_weights = ew.ActorRolloutRefWorker.update_weights
+    # ---- weight_sync: ColocatedCheckpointEngine.update_weights -------------
+    # 驱动侧普通类，同步调用；不打 worker 侧 ActorRolloutRefWorker —— 那里的
+    # @register 分发元数据被普通函数替换会让 RayWorkerGroup 找不到方法
+    # （'RayWorkerGroup' object has no attribute 'update_weights'）。
+    _orig_update_weights = ceb.ColocatedCheckpointEngine.update_weights
 
-    async def traced_update_weights(self, global_steps: int = None, mode: str = "auto"):
+    def traced_update_weights(self, global_steps: int = None):
         t0 = _now()
-        result = await _orig_update_weights(self, global_steps=global_steps, mode=mode)
+        result = _orig_update_weights(self, global_steps=global_steps)
         spill(
             "weight_sync",
             version=int(global_steps or 0),
@@ -70,7 +73,7 @@ def install() -> None:
         )
         return result
 
-    ew.ActorRolloutRefWorker.update_weights = traced_update_weights
+    ceb.ColocatedCheckpointEngine.update_weights = traced_update_weights
 
     # ---- engine-level schedule span around each generation step -----------
     _orig_mgr_gen = al.AgentLoopManager.generate_sequences
