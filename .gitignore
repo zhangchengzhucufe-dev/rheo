@@ -225,3 +225,6 @@ bench/traces/*
 # Rheo: bench/analysis 产出的报告不进 git（目录本身靠 .gitkeep 保留）
 bench/results/*
 !bench/results/.gitkeep
+
+# verl hydra 输出（每次运行的 main_ppo.log）
+outputs/
