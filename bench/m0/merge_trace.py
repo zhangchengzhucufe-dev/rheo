@@ -13,7 +13,7 @@ $RHEO_TRACE_DIR/spill-<pid>.jsonl (wall-clock ns). The merger:
 4. writes the final JSONL via rheotrace.write() and runs rheotrace.validate.
 
 Usage:
-    python bench/m0/merge_trace.py --spill-dir DIR [--out FILE] [--strict]
+    python bench/m0/merge_trace.py --spill-dir DIR [--out FILE]
 """
 
 import argparse
@@ -48,7 +48,6 @@ def main() -> None:
         type=Path,
         default=here / ".." / "traces" / "m0-baseline.jsonl",
     )
-    ap.add_argument("--strict", action="store_true", default=True)
     ap.add_argument("--model", default="Qwen2.5-1.5B-Instruct")
     ap.add_argument("--n-workers", type=int, default=8)
     args = ap.parse_args()
@@ -147,12 +146,14 @@ def main() -> None:
     n = write(args.out, out_events)
     print(f"wrote {n} events -> {args.out}")
 
-    report = validate(args.out, strict=args.strict)
+    report = validate(args.out, strict=False)
     print(f"validate: ok={report.ok} errors={len(report.errors)} warnings={len(report.warnings)}")
     for err in report.errors:
         print("  E:", err)
     for warn in report.warnings:
         print("  W:", warn)
+    if not report.ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

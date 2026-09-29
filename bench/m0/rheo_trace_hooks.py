@@ -1,18 +1,22 @@
 """RheoTrace instrumentation for verl 0.8.0 (TASK-A step 3).
 
 Loaded via a ``sitecustomize.py`` bootstrap in ~/tools/venvs/rheo whenever
-``RHEO_TRACE=1`` and ``RHEO_TRACE_HOOKS`` points at this file. Every ray worker
-process that imports verl gets the monkey patches below; events are appended to
-per-process spill files (``$RHEO_TRACE_DIR/spill-<pid>.jsonl``) with wall-clock
-ns timestamps, then merged into a single RheoTrace file by
-``bench/m0/merge_trace.py`` (spec §3 sanctions per-worker files; the merger
-replays the weight_sync ledger to derive per-segment birth/end_version).
+``RHEO_TRACE=1``, ``RHEO_TRACE_HOOKS`` points at this file, and argv[0] is not
+a ``-c`` one-shot. Every ray worker process gets the monkey patches below;
+events are appended to per-process spill files
+(``$RHEO_TRACE_DIR/spill-<pid>.jsonl``) with wall-clock ns timestamps, then
+merged into a single RheoTrace file by ``bench/m0/merge_trace.py`` (spec §3
+sanctions per-worker files; the merger replays the weight_sync ledger to
+derive per-segment birth/end_version).
 
 Patched sites:
-- ActorRolloutRefWorker.update_weights  -> weight_sync (version=global_steps)
-- AgentLoopManager.generate_sequences   -> engine-level schedule span per step
-- SingleTurnAgentLoop.run               -> segment lifecycle + decode span +
-                                          token_logprob chunk + submit-wait span
+- CheckpointEngineManager.update_weights -> weight_sync (driver side; worker
+  side carries @register dispatch metadata that a plain function would break)
+- AgentLoopManager.generate_sequences    -> engine-level schedule span per
+  step (plain function: the original is @auto_await and fit() calls it sync)
+- SingleTurnAgentLoop.run                -> segment lifecycle + decode span +
+  token_logprob chunk; the LLMServerClient.generate timing is captured via a
+  ContextVar so concurrent per-sample tasks don't stomp each other.
 
 No-op (zero imports beyond os) unless RHEO_TRACE=1.
 """
@@ -44,6 +48,28 @@ def spill(type_: str, **fields: dict) -> None:
 
 def _now() -> int:
     return time.time_ns()
+
+
+def _install_weight_sync_hook():
+    import verl.checkpoint_engine.base as ceb
+
+    _orig_update_weights = ceb.CheckpointEngineManager.update_weights
+
+    def traced_update_weights(self, global_steps: int = None):
+        t0 = _now()
+        result = _orig_update_weights(self, global_steps=global_steps)
+        spill(
+            "weight_sync",
+            version=int(global_steps or 0),
+            t_start=t0,
+            t_end=_now(),
+            mode="full",
+            trainer_step=int(global_steps or 0),
+        )
+        return result
+
+    ceb.CheckpointEngineManager.update_weights = traced_update_weights
+    print("[rheo-trace] hook: weight_sync (CheckpointEngineManager)", flush=True)
 
 
 def _install_gen_hook():
@@ -78,10 +104,42 @@ def _install_gen_hook():
     print("[rheo-trace] hook: schedule spans (AgentLoopManager)", flush=True)
 
 
+_GEN_CV = None  # lazily created ContextVar (created inside install())
+
+
+def _install_gen_timing_hook():
+    """LLMServerClient.generate 计时（类级，只包一次）。
+
+    每个 sample 的 run() 在自己的 asyncio.Task 里执行，通过 ContextVar 把
+    计时槽传给共享的 wrapper——并发 sample 互不踩踏。
+    """
+    import contextvars
+
+    import verl.workers.rollout.llm_server as lls
+
+    global _GEN_CV
+    if _GEN_CV is None:
+        _GEN_CV = contextvars.ContextVar("rheo_gen_timing", default=None)
+
+    orig_generate = lls.LLMServerClient.generate
+
+    async def timed_generate(self, *a, **kw):
+        slot = _GEN_CV.get()
+        if slot is not None and slot.get("t0") is None:
+            slot["t0"] = _now()
+        out = await orig_generate(self, *a, **kw)
+        if slot is not None:
+            slot["t1"] = _now()
+        return out
+
+    timed_generate.__rheo_wrapped__ = True
+    lls.LLMServerClient.generate = timed_generate
+    print("[rheo-trace] hook: generate timing (LLMServerClient)", flush=True)
+
+
 def _install_segment_hook():
     import verl.experimental.agent_loop.single_turn_agent_loop as stl
 
-    # ---- per-segment lifecycle: SingleTurnAgentLoop.run --------------------
     _orig_loop_run = stl.SingleTurnAgentLoop.run
 
     async def traced_loop_run(self, sampling_params: dict, **kwargs):
@@ -92,22 +150,9 @@ def _install_segment_hook():
         info = kwargs.get("extra_info") or {}
         group_id = f"g-{info.get('index', id(kwargs.get('raw_prompt')) & 0xFFFF):08d}"
 
-        # wrap the underlying generate call to bracket decode + capture logprobs
-        orig_generate = self.server_manager.generate
-        gen = {"t0": None, "t1": None, "out": None}
-
-        async def timed_generate(*a, **kw):
-            gen["t0"] = _now()
-            out = await orig_generate(*a, **kw)
-            gen["t1"] = _now()
-            gen["out"] = out
-            return out
-
-        self.server_manager.generate = timed_generate
-        try:
-            output = await _orig_loop_run(self, sampling_params, **kwargs)
-        finally:
-            self.server_manager.generate = orig_generate
+        gen = {"t0": None, "t1": None}
+        _GEN_CV.set(gen)
+        output = await _orig_loop_run(self, sampling_params, **kwargs)
 
         try:
             n_prompt = len(output.prompt_ids)
@@ -120,7 +165,7 @@ def _install_segment_hook():
                 t_start=t_seg_start,
                 n_prompt_tokens=n_prompt,
             )
-            if gen["t0"] is not None:
+            if gen["t0"] is not None and gen["t1"] is not None:
                 spill(
                     "phase_span",
                     seg_id=seg_id,
@@ -159,6 +204,7 @@ def install() -> None:
         ("weight_sync", _install_weight_sync_hook),
         ("schedule", _install_gen_hook),
         ("segment", _install_segment_hook),
+        ("generate timing", _install_gen_timing_hook),
     ]:
         try:
             fn()
@@ -168,30 +214,6 @@ def install() -> None:
             print(f"[rheo-trace] hook {name} FAILED:", flush=True)
             traceback.print_exc()
     spill("trace_boot", pid=os.getpid())
-
-
-def _install_weight_sync_hook():
-    import os  # noqa: F401
-
-    import verl.checkpoint_engine.base as ceb
-
-    _orig_update_weights = ceb.CheckpointEngineManager.update_weights
-
-    def traced_update_weights(self, global_steps: int = None):
-        t0 = _now()
-        result = _orig_update_weights(self, global_steps=global_steps)
-        spill(
-            "weight_sync",
-            version=int(global_steps or 0),
-            t_start=t0,
-            t_end=_now(),
-            mode="full",
-            trainer_step=int(global_steps or 0),
-        )
-        return result
-
-    ceb.CheckpointEngineManager.update_weights = traced_update_weights
-    print("[rheo-trace] hook: weight_sync (CheckpointEngineManager)", flush=True)
 
 
 install()

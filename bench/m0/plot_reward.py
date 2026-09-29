@@ -39,9 +39,35 @@ def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     results = os.path.join(here, "..", "results", "m0-baseline")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tb-dir", default=os.path.join(results, "tb"))
+    ap.add_argument(
+        "--tb-dir",
+        default=None,
+        help="tensorboard 目录；默认取 tb/<project>/<exp> 中最新的实验目录，"
+        "避免把冒烟/迷你跑的曲线混进正式跑",
+    )
     ap.add_argument("--out", default=os.path.join(results, "reward_curve.png"))
     args = ap.parse_args()
+
+    if args.tb_dir is None:
+        root = os.path.join(results, "tb")
+        # 事件可能在 tb/<project>/<exp>/ 子目录，也可能平铺在 tb/ 根下
+        exp_dirs = [
+            d
+            for d in glob.glob(os.path.join(root, "*", "*"))
+            if glob.glob(os.path.join(d, "events.out.*"))
+        ]
+        if exp_dirs:
+            args.tb_dir = max(
+                exp_dirs,
+                key=lambda d: max(
+                    os.path.getmtime(f) for f in glob.glob(os.path.join(d, "events.out.*"))
+                ),
+            )
+        elif glob.glob(os.path.join(root, "events.out.*")):
+            args.tb_dir = root
+        else:
+            raise SystemExit(f"no tensorboard events under {root}")
+        print(f"using newest experiment dir: {args.tb_dir}")
 
     series = load_scalars(args.tb_dir)
     if not series:
@@ -51,9 +77,9 @@ def main() -> None:
         pts = series[tag]
         print(f"  {tag}: {len(pts)} points, steps {min(pts)}..{max(pts)}")
 
-    train_tags = pick(series, "reward", "score")
-    train_tags = [t for t in train_tags if not t.startswith("val/")]
-    val_tags = pick(series, "val/")
+    # verl 的验证 tag 形如 val-core/... val-aux/...（不带 "val/"），按前缀区分
+    val_tags = [t for t in series if t.startswith("val")]
+    train_tags = [t for t in pick(series, "reward", "score") if not t.startswith("val")]
     len_tags = pick(series, "response_length")
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True, height_ratios=[3, 1])

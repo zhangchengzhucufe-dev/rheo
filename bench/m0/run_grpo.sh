@@ -32,6 +32,12 @@ TEST_FREQ=${TEST_FREQ:-10}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-true}
 EXP=${EXP:-grpo-lora-qwen25-1.5b}
 
+# verl 约束：train_batch_size >= ppo_mini_batch_size(8)，且单卡下应为 8 的倍数
+if [ "$BATCH" -lt 8 ] || [ $((BATCH % 8)) -ne 0 ]; then
+  echo "[run_grpo] BATCH=$BATCH 无效：必须 >= 8 且为 8 的倍数（ppo_mini_batch_size=8）" >&2
+  exit 64
+fi
+
 mkdir -p "$RESULTS/logs" "$CKPT_DIR"
 
 # ray/vllm 在 WSL2 下的稳定性开关
@@ -39,7 +45,7 @@ export RAY_memory_monitor_refresh_ms=0
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=WARNING
 export HYDRA_FULL_ERROR=1
-export TENSORBOARD_DIR="$RESULTS/tb"
+export TENSORBOARD_DIR="$RESULTS/tb/$EXP"
 # WSL2 不支持 CUDA IPC：verl 权重传输走宿主共享内存
 # （需要 ~/tools/venvs/rheo 中 verl/utils/device.py 的本地补丁，见 env.md）
 export VERL_DISABLE_CUDA_IPC=1
@@ -51,6 +57,7 @@ export RHEO_KEEP_EXPANDABLE=1
 # RheoTrace 插桩（TASK-A step 3）：置 1 时每个 ray worker 进程经 sitecustomize
 # 加载 bench/m0/rheo_trace_hooks.py，事件落 $RHEO_TRACE_DIR/spill-<pid>.jsonl，
 # 训练结束后用 bench/m0/merge_trace.py 合并 + validate
+# spill 目录生命周期：全新跑之前清空它；断点续跑时保留（merge 需要完整历史）
 export RHEO_TRACE=${RHEO_TRACE:-0}
 export RHEO_TRACE_HOOKS="$REPO_DIR/bench/m0/rheo_trace_hooks.py"
 export RHEO_TRACE_DIR=${RHEO_TRACE_DIR:-$RESULTS/traces-spill}
@@ -67,7 +74,8 @@ run_training() {
 
 while true; do
   echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE)"
-  ATTEMPT_LOG="$RESULTS/logs/attempt-$(date +%H%M%S).log"
+  ATTEMPT_LOG="$RESULTS/logs/attempt-$(date +%H%M%S)-$$.log"
+  rc=0
   run_training \
   data.train_files="$DATA_DIR/train.parquet" \
   data.val_files="$DATA_DIR/test.parquet" \
@@ -110,8 +118,7 @@ while true; do
   trainer.logger='[console,tensorboard]' \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \
-  trainer.default_local_dir="$CKPT_DIR/$EXP" > "$ATTEMPT_LOG" 2>&1
-  rc=$?
+  trainer.default_local_dir="$CKPT_DIR/$EXP" > "$ATTEMPT_LOG" 2>&1 || rc=$?
   tail -40 "$ATTEMPT_LOG"
   if [ "$rc" -eq 0 ]; then
     echo "[run_grpo] training finished ok"
@@ -128,6 +135,8 @@ while true; do
     exit 1
   fi
   UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
+  # 清掉残留 ray 集群，避免下次 attempt 挂到死 worker 上
+  "$PYTHON" -m ray stop --force >/dev/null 2>&1 || true
   sleep 10
 done
 
