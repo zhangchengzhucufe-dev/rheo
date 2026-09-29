@@ -68,6 +68,13 @@ def test_writer_point_events_take_now_as_ts(tmp_path):
     assert ev["ts"] >= t_start
 
 
+def test_validate_rejects_single_event_dict():
+    """误用守卫：传入单个事件 dict（而非序列）应立刻 TypeError，而不是按键迭代产生误导报告。"""
+    ev = rheotrace.generate(preset="grpo", seed=0)
+    with pytest.raises(TypeError, match="单个事件"):
+        rheotrace.validate(ev[0])
+
+
 def test_writer_emit_after_close_raises(tmp_path):
     w = rheotrace.TraceWriter(tmp_path / "w.jsonl", engine="e", model="m")
     w.close()
