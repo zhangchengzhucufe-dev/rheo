@@ -205,8 +205,17 @@ def parse_events(lines: list[str]) -> Trace:
             if aborted and phase == PHASE_PREFILL:
                 raise TraceError(f"第 {line_no} 行：prefill 段不能标记 aborted")
             execs.append(
-                Exec(traj=traj, batch=batch, phase=phase, t0=t0, t1=t1, bv=bv, n_tok=n_tok,
-                     committed=committed, aborted=aborted)
+                Exec(
+                    traj=traj,
+                    batch=batch,
+                    phase=phase,
+                    t0=t0,
+                    t1=t1,
+                    bv=bv,
+                    n_tok=n_tok,
+                    committed=committed,
+                    aborted=aborted,
+                )
             )
         elif ev == "env_wait":
             env_waits.append(EnvWait(traj=str(_require(obj, "traj", line_no)), t0=t0, t1=t1))

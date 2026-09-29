@@ -197,11 +197,11 @@ report.md
 | 时钟约定（单调、ns、排序） | ns 整数、事件按 ts 非降序（E04/E18） | ✅ 满足 |
 | abort 语义（reason） | `segment_end{state=aborted, reason 必填}`（E15） | ✅ 满足；committed 以"非 aborted"近似 |
 | 投机解码预留 | §8 明确 M5 增量事件，兼容路径成立 | ✅ 接受其显式推迟 |
-| **batch_id** | spec 全文无批概念 | ❌ **缺口**，S1–S3 核心依赖 → 已提 issues.md 请求向后兼容增量；过渡期按 §3.3 降级口径 |
-| 区间开闭语义 | spec 未写明 | ⚠️ 小缺口 → 已提 issues.md；C 侧统一按左闭右开处理 |
-| prefill/decode span 的 `n_tokens` | spec 标可选 | ⚠️ C 分析必需 → 已提 issues.md（请 A 插桩必填）；适配器遇缺失直接报错不静默估 |
+| **batch_id** | `segment_start.batch_id`（v0.1.1 §8 兼容增量，B 应 C 请求补） | ✅ 接口就绪；合成器不产出，A 插桩可填则 S1–S3 脱离近似；过渡期按 §3.3 降级口径（含 W-BATCH-STAGGERED 守卫） |
+| 区间开闭语义 | spec v0.1.1 §3 明确左闭右开 `[t_start, t_end)`，端点重合归属后一区间 | ✅ 与 canon/实现约定完全一致 |
+| prefill/decode span 的 `n_tokens` | spec v0.1.1 标 **SHOULD** 必填（B 采纳 C 提议） | ✅ 已解决；适配器遇缺失仍报错不静默估 |
 
-冻结前的原始需求清单已被上表取代；对 B 的待办以 `docs/issues.md` 为准。
+冻结前的原始需求清单已被上表取代；对 B 的待办以 `docs/issues.md` 为准（2026-09-29 起三项缺口均由 B 在 #12 落实）。
 
 ## 7. 验收对照（TASK-C 第 1 天项）
 

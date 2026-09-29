@@ -32,8 +32,13 @@ from bench.analysis.metrics import (  # noqa: E402
 
 def hdr(**kw):
     base = {
-        "ev": "header", "format": "rheo-canon-v0", "clock": "mono_ns",
-        "model": "qwen2.5-1.5b", "P": MODEL_P, "L": MODEL_L, "d": MODEL_D,
+        "ev": "header",
+        "format": "rheo-canon-v0",
+        "clock": "mono_ns",
+        "model": "qwen2.5-1.5b",
+        "P": MODEL_P,
+        "L": MODEL_L,
+        "d": MODEL_D,
         "world_size": 1,
     }
     base.update(kw)
@@ -42,8 +47,13 @@ def hdr(**kw):
 
 def ex(traj, batch, phase, t0, t1, bv, n, **kw):
     ev = {
-        "ev": "exec", "traj": traj, "batch": batch, "phase": phase,
-        "t0": t0, "t1": t1, "bv": bv,
+        "ev": "exec",
+        "traj": traj,
+        "batch": batch,
+        "phase": phase,
+        "t0": t0,
+        "t1": t1,
+        "bv": bv,
         "n_prompt" if phase == "prefill" else "n_gen": n,
     }
     ev.update(kw)
@@ -63,8 +73,15 @@ def approx(x, y, rel=1e-9):
 
 
 def test_roundtrip_clean(tmp_path):
-    cfg = SynthConfig(n_batches=2, group_size=4, seed=3, len_mode="normal",
-                      short_len=300, long_len=600, long_std=50)
+    cfg = SynthConfig(
+        n_batches=2,
+        group_size=4,
+        seed=3,
+        len_mode="normal",
+        short_len=300,
+        long_len=600,
+        long_std=50,
+    )
     events, truth = generate_events(cfg)
     path = tmp_path / "roundtrip.jsonl"
     path.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
@@ -93,9 +110,17 @@ def test_roundtrip_clean(tmp_path):
 
 
 def test_global_env_wait_p2():
-    cfg = SynthConfig(n_batches=2, group_size=4, seed=5, len_mode="normal",
-                      short_len=200, long_len=400, long_std=30,
-                      global_env_wait_batch=0, env_wait_dur_ns=80_000_000)
+    cfg = SynthConfig(
+        n_batches=2,
+        group_size=4,
+        seed=5,
+        len_mode="normal",
+        short_len=200,
+        long_len=400,
+        long_std=30,
+        global_env_wait_batch=0,
+        env_wait_dur_ns=80_000_000,
+    )
     events, truth = generate_events(cfg)
     a = analyze(parse(events), peak_tflops=10.0)
     approx(a.pause_totals["P2"], truth["p2"] / 1e9)
@@ -106,8 +131,16 @@ def test_global_env_wait_p2():
 
 
 def test_abort_waste_and_two_columns():
-    cfg = SynthConfig(n_batches=1, group_size=4, seed=1, len_mode="normal",
-                      short_len=300, long_len=500, long_std=40, abort_frac=0.5)
+    cfg = SynthConfig(
+        n_batches=1,
+        group_size=4,
+        seed=1,
+        len_mode="normal",
+        short_len=300,
+        long_len=500,
+        long_std=40,
+        abort_frac=0.5,
+    )
     events, truth = generate_events(cfg)
     a = analyze(parse(events), peak_tflops=10.0)
     assert a.n_aborted == truth["n_aborted"]
@@ -165,9 +198,10 @@ def test_straggler_s1_s2():
         ex("x2", "b0", "decode", 100, 1000, 0, 900),
         ex("x3", "b0", "decode", 100, 3000, 0, 2900),
     ]
-    events += [{"ev": "traj_end", "traj": f"x{i}",
-                "t": 3000 if i == 3 else 1000, "status": "finished"}
-               for i in range(4)]
+    events += [
+        {"ev": "traj_end", "traj": f"x{i}", "t": 3000 if i == 3 else 1000, "status": "finished"}
+        for i in range(4)
+    ]
     a = analyze(parse(events), peak_tflops=10.0)
     # T_active = 执行区间并集 = [0,100)∪[100,3000) = 3000；掉队 = [1000,3000) = 2000
     approx(a.t_straggler_s, 2000e-9)
@@ -213,13 +247,23 @@ def test_validator_rejects():
     import pytest
 
     _expect_err([ex("a", "b0", "prefill", 0, 1, 0, 5)], "header")
-    _expect_err([hdr(), ex("a", "b0", "prefill", 500, 600, 0, 5),
-                 ex("a", "b0", "decode", 100, 200, 0, 5)], "乱序")
-    _expect_err([hdr(), {"ev": "ver_bump", "t": 10, "ver": 2},
-                 {"ev": "ver_bump", "t": 20, "ver": 1}], "版本回退")
-    _expect_err([hdr(), ex("a", "b0", "decode", 0, 10, 0, 5),
-                 {"ev": "traj_end", "traj": "a", "t": 10, "status": "finished"},
-                 ex("a", "b0", "decode", 20, 30, 0, 5)], "终止")
+    _expect_err(
+        [hdr(), ex("a", "b0", "prefill", 500, 600, 0, 5), ex("a", "b0", "decode", 100, 200, 0, 5)],
+        "乱序",
+    )
+    _expect_err(
+        [hdr(), {"ev": "ver_bump", "t": 10, "ver": 2}, {"ev": "ver_bump", "t": 20, "ver": 1}],
+        "版本回退",
+    )
+    _expect_err(
+        [
+            hdr(),
+            ex("a", "b0", "decode", 0, 10, 0, 5),
+            {"ev": "traj_end", "traj": "a", "t": 10, "status": "finished"},
+            ex("a", "b0", "decode", 20, 30, 0, 5),
+        ],
+        "终止",
+    )
     _expect_err([hdr(), ex("a", "b0", "decode", 0, 10, 1, 5)], "当前版本")
     _expect_err([hdr(), ex("a", "b0", "decode", 10, 5, 0, 5)], "倒置")
 
@@ -308,31 +352,120 @@ def _btrace_events():
         return base + ms * 1_000_000
 
     return [
-        {"ts": T(0), "type": "run_start", "run_id": "r-t", "format": "rheotrace-jsonl",
-         "schema_version": 0, "initial_version": 0, "engine": "test", "n_workers": 2,
-         "model": "Qwen2.5-1.5B-Instruct", "clock": "wall_ns_epoch"},
-        {"ts": T(100), "type": "segment_start", "run_id": "r-t", "seg_id": "s1",
-         "group_id": "g1", "birth_version": 0, "t_start": T(100), "n_prompt_tokens": 112},
-        {"ts": T(110), "type": "phase_span", "run_id": "r-t", "seg_id": "s1",
-         "phase": "prefill", "t_start": T(100), "t_end": T(110), "n_tokens": 112},
-        {"ts": T(205), "type": "phase_span", "run_id": "r-t", "seg_id": "s1",
-         "phase": "decode", "t_start": T(110), "t_end": T(205), "n_tokens": 190},
-        {"ts": T(205), "type": "segment_end", "run_id": "r-t", "seg_id": "s1",
-         "state": "finished", "from_state": "running", "t_end": T(205),
-         "n_gen_tokens": 190, "birth_version": 0, "end_version": 0, "finish_mode": "exact"},
-        {"ts": T(290), "type": "weight_sync", "run_id": "r-t", "version": 1,
-         "t_start": T(210), "t_end": T(290), "mode": "full", "trainer_step": 1},
-        {"ts": T(300), "type": "segment_start", "run_id": "r-t", "seg_id": "s2",
-         "group_id": "g2", "birth_version": 1, "t_start": T(300), "n_prompt_tokens": 100},
-        {"ts": T(310), "type": "phase_span", "run_id": "r-t", "seg_id": "s2",
-         "phase": "prefill", "t_start": T(300), "t_end": T(310), "n_tokens": 100},
-        {"ts": T(410), "type": "phase_span", "run_id": "r-t", "seg_id": "s2",
-         "phase": "decode", "t_start": T(310), "t_end": T(410), "n_tokens": 90},
-        {"ts": T(410), "type": "segment_end", "run_id": "r-t", "seg_id": "s2",
-         "state": "finished", "from_state": "running", "t_end": T(410),
-         "n_gen_tokens": 90, "birth_version": 1, "end_version": 1, "finish_mode": "exact"},
-        {"ts": T(410), "type": "run_end", "run_id": "r-t",
-         "summary": {"segments": 2, "weight_syncs": 1, "gen_tokens": 280}},
+        {
+            "ts": T(0),
+            "type": "run_start",
+            "run_id": "r-t",
+            "format": "rheotrace-jsonl",
+            "schema_version": 0,
+            "initial_version": 0,
+            "engine": "test",
+            "n_workers": 2,
+            "model": "Qwen2.5-1.5B-Instruct",
+            "clock": "wall_ns_epoch",
+        },
+        {
+            "ts": T(100),
+            "type": "segment_start",
+            "run_id": "r-t",
+            "seg_id": "s1",
+            "group_id": "g1",
+            "birth_version": 0,
+            "t_start": T(100),
+            "n_prompt_tokens": 112,
+        },
+        {
+            "ts": T(110),
+            "type": "phase_span",
+            "run_id": "r-t",
+            "seg_id": "s1",
+            "phase": "prefill",
+            "t_start": T(100),
+            "t_end": T(110),
+            "n_tokens": 112,
+        },
+        {
+            "ts": T(205),
+            "type": "phase_span",
+            "run_id": "r-t",
+            "seg_id": "s1",
+            "phase": "decode",
+            "t_start": T(110),
+            "t_end": T(205),
+            "n_tokens": 190,
+        },
+        {
+            "ts": T(205),
+            "type": "segment_end",
+            "run_id": "r-t",
+            "seg_id": "s1",
+            "state": "finished",
+            "from_state": "running",
+            "t_end": T(205),
+            "n_gen_tokens": 190,
+            "birth_version": 0,
+            "end_version": 0,
+            "finish_mode": "exact",
+        },
+        {
+            "ts": T(290),
+            "type": "weight_sync",
+            "run_id": "r-t",
+            "version": 1,
+            "t_start": T(210),
+            "t_end": T(290),
+            "mode": "full",
+            "trainer_step": 1,
+        },
+        {
+            "ts": T(300),
+            "type": "segment_start",
+            "run_id": "r-t",
+            "seg_id": "s2",
+            "group_id": "g2",
+            "birth_version": 1,
+            "t_start": T(300),
+            "n_prompt_tokens": 100,
+        },
+        {
+            "ts": T(310),
+            "type": "phase_span",
+            "run_id": "r-t",
+            "seg_id": "s2",
+            "phase": "prefill",
+            "t_start": T(300),
+            "t_end": T(310),
+            "n_tokens": 100,
+        },
+        {
+            "ts": T(410),
+            "type": "phase_span",
+            "run_id": "r-t",
+            "seg_id": "s2",
+            "phase": "decode",
+            "t_start": T(310),
+            "t_end": T(410),
+            "n_tokens": 90,
+        },
+        {
+            "ts": T(410),
+            "type": "segment_end",
+            "run_id": "r-t",
+            "seg_id": "s2",
+            "state": "finished",
+            "from_state": "running",
+            "t_end": T(410),
+            "n_gen_tokens": 90,
+            "birth_version": 1,
+            "end_version": 1,
+            "finish_mode": "exact",
+        },
+        {
+            "ts": T(410),
+            "type": "run_end",
+            "run_id": "r-t",
+            "summary": {"segments": 2, "weight_syncs": 1, "gen_tokens": 280},
+        },
     ]
 
 
@@ -380,8 +513,7 @@ def test_model_alias_no_13b_mismatch():
         h = hdr(model=model)
         for k in ("P", "L", "d"):
             h.pop(k)  # 剥掉内嵌参数，强制走模型名 → 内置表解析
-        return canon.parse_events([json.dumps(h), json.dumps(
-            ex("a", "b0", "decode", 0, 10, 0, 5))])
+        return canon.parse_events([json.dumps(h), json.dumps(ex("a", "b0", "decode", 0, 10, 0, 5))])
 
     approx(resolve_model_config(mk("Synthetic-1.5B"), None).P, BUILTIN_MODELS["qwen2.5-1.5b"].P)
     with pytest.raises(MetricsError):

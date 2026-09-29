@@ -17,5 +17,7 @@ jobs:
         run: pip install -e ".[dev,analysis]"
       - name: Lint
         run: ruff check .
+      - name: Format check
+        run: ruff format --check .
       - name: Test
         run: pytest
