@@ -10,6 +10,12 @@ i=0
 while [ "$i" -lt "$MAX_BATCHES" ]; do
   i=$((i + 1))
   echo "[supervisor] batch $i/$MAX_BATCHES start $(date '+%F %T')"
+  # 清理上批可能泄漏的锁（若持有者已死）—— with-lock 自动接管要等 2 小时
+  lf=/mnt/c/Users/15985/tools/.locks/gpu.lock
+  if [ -f "$lf" ] && ! ps -p "$(head -1 "$lf" | awk '{print $1}')" >/dev/null 2>&1; then
+    rm -f "$lf"
+    echo "[supervisor] removed stale gpu.lock"
+  fi
   RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=10 VAL_BEFORE_TRAIN=false \
     "$HOME/tools/bin/with-lock" gpu 1800 -- bash "$HOME/rheo-a/bench/m0/run_grpo.sh"
   rc=$?
