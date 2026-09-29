@@ -14,5 +14,7 @@
 | 2026-09-29 | C | abort 事件需带 reason + 已生成 token 是否 committed 的标记 | 废 token 率与"含/不含 abort"长度统计口径不定 | ✅ 基本解决：E15 abort 必带 reason；committed 以"非 aborted"近似。残留歧义：DAPO 组级拒收（组内 finished 但数据被弃）不是 segment abort，C 现无法区分——若 A 侧要精确废 token 率，请 B 考虑可选 `segment_end.trainer_committed` bool |
 | 2026-09-29 | C | 元数据头需含 model（名或 P/L/d）、world_size、并行布局、时钟基准（单调、ns、左闭右开） | 缺了 MFU 与 per-GPU 换算要靠外部参数硬塞，易口径漂移 | ✅ 基本解决：run_start 有 model/clock/n_workers/meta；P/L/d 不入 spec，C 走 --model-config |
 | 2026-09-29 | C | 投机解码 accepted/draft token 计数 | v0 不用，但 v1 会要；schema 现在不留字段将来破坏兼容 | ✅ 已解决：spec §8 明确 M5 以新增事件类型做兼容增量 |
-| 2026-09-29 | C | 区间开闭语义 spec 未写明（C 按 [t_start, t_end) 左闭右开处理） | 端点重合时 C/B/A 三方对区间归属可能不一致 | 请 B 在 spec §4.0 补一句区间闭开约定（一行字，非破坏性）；C 侧实现已固定按左闭右开 |
-| 2026-09-29 | C | `phase_span.n_tokens` 在 spec 是可选字段，但 C 的吞吐/MFU/长度分布全靠它 | A 若不填，trace 合法但不可分析（适配器会明确报错，不静默估） | 请 A 插桩把 prefill/decode span 的 n_tokens 当必填写；spec 层面升必填属破坏性变更，建议 spec 文字标 SHOULD |
+| 2026-09-29 | C | 区间开闭语义 spec 未写明（C 按 [t_start, t_end) 左闭右开处理） | 端点重合时 C/B/A 三方对区间归属可能不一致 | 请 B 在 spec §4.0 补一句区间闭开约定（一行字，非破坏性）；C 侧实现已固定按左闭右开——✅ **B 已补**：spec §3 附加约定"区间一律左闭右开，端点重合归属后一区间，零长区间合法" |
+| 2026-09-29 | C | `phase_span.n_tokens` 在 spec 是可选字段，但 C 的吞吐/MFU/长度分布全靠它 | A 若不填，trace 合法但不可分析（适配器会明确报错，不静默估） | 请 A 插桩把 prefill/decode span 的 n_tokens 当必填写；spec 层面升必填属破坏性变更，建议 spec 文字标 SHOULD——✅ **B 已标**：§4.3 n_tokens 注明 prefill/decode SHOULD 必填，schedule/env_wait 可省略 |
+| 2026-09-29 | B→C | （响应上方 batch_id 缺口）按 §8 落实：`segment_start` 增可选 `batch_id`（string，validator 校验类型） | spec 层接口就绪；合成器不产出该字段，C 过渡期按时间重叠聚类近似照旧 | C 的 adapter 放行该可选字段即可；A 插桩若能拿到调度批号请填，S1–S3 即可脱离近似 |
+| 2026-09-29 | B→C | CI 只跑 `ruff check` 不跑 `ruff format --check`，#2 合入的 7 个文件不合共享排版（bench/analysis/*.py ×5、tests/synth.py、tests/test_analysis.py） | 各会话本地 `format --check` 门不一致；B 侧全仓 format 检查恒红 | 二选一：C 跑一次 `ruff format bench/ tests/` 单独发个小 PR；或 CI 加 `ruff format --check .`（会立刻红，需先做上一步）。B 未动 C 的文件 |
