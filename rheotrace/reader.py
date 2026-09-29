@@ -45,8 +45,8 @@ def _readline_lenient(fh: Any) -> str:
 def iread(path: str | Path, *, skip_truncated: bool = False) -> Iterator[dict]:
     """逐事件流式读取。
 
-    skip_truncated=True 时，仅当损坏是截断形态（末行 JSON 残缺 / gzip 流提前结束）
-    才静默停止；gzip 层的结构性损坏（CORRUPT）恒抛 RheotraceError。
+    skip_truncated=True 时，仅当损坏是截断形态（gzip 流提前结束 / 无换行的末行残缺）
+    才静默停止；带换行的损坏行与 gzip 结构性损坏（CORRUPT）恒抛 RheotraceError。
     """
     with open_text(path) as fh:
         lineno = 0
@@ -66,20 +66,11 @@ def iread(path: str | Path, *, skip_truncated: bool = False) -> Iterator[dict]:
             try:
                 yield json.loads(s)
             except json.JSONDecodeError:
-                try:
-                    rest = _readline_lenient(fh)
-                except RheotraceError as e:
-                    if str(e).startswith("TRUNCATED") and skip_truncated:
-                        return
-                    raise
-                if rest.strip():
-                    raise RheotraceError(f"第 {lineno} 行 JSON 解析失败") from None
-                if skip_truncated:
+                truncated_tail = not line.endswith("\n")
+                if skip_truncated and truncated_tail:
                     return
-                raise RheotraceError(
-                    f"第 {lineno} 行 JSON 残缺且无后续内容（末尾截断）；"
-                    "如需容忍请用 skip_truncated=True 或 validate 的宽松模式"
-                ) from None
+                kind = "末行 JSON 残缺（文件截断）" if truncated_tail else "JSON 解析失败"
+                raise RheotraceError(f"第 {lineno} 行 {kind}") from None
 
 
 def read(path: str | Path, *, skip_truncated: bool = False) -> list[dict]:

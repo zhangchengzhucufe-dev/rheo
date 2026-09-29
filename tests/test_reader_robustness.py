@@ -74,3 +74,18 @@ def test_crlf_line_endings_tolerated(tmp_path):
     rep = rheotrace.validate(p, strict=False)
     assert rep.ok and not rep.warnings
     assert rheotrace.read(p) == _good_events()
+
+
+def test_corrupt_last_line_with_newline_is_error_not_warning(tmp_path):
+    """带换行的损坏末行 = 完整写入的坏数据（E02），不得因'恰好是末行'降级为 W01。"""
+    p = tmp_path / "g.jsonl"
+    lines = [rheotrace.core.dumps_line(e) for e in _good_events()]
+    lines[-1] = "garbage\n"
+    p.write_text("\n".join(lines))
+    rep = rheotrace.validate(p, strict=False)
+    assert any(x.rule == "E02" for x in rep.errors)
+    try:
+        rheotrace.read(p, skip_truncated=True)
+        raise AssertionError("带换行的损坏行不该被 skip_truncated 吞掉")
+    except RheotraceError:
+        pass
