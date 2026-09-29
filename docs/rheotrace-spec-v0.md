@@ -2,7 +2,7 @@
 
 > 版本 v0.1 · 2026-09-29 · 会话 B 起草，供 A（verl 插桩）与 C（分析流水线）引用
 > 状态：**M1 核心接缝冻结**。字段与语义一经 merge 不再改动；只允许向后兼容的增量（见 §8）。
-> 修订：v0.1 校准 validator 规则表与实现的一致性（E01 措辞、新增 E18/W09 落实 §4.0 的 ts 约定），无字段/语义变更。
+> 修订：v0.1 校准 validator 规则表与实现的一致性（E01 措辞、新增 E18/W09 落实 §4.0 的 ts 约定、initial_version 必填措辞消歧），无字段/语义变更。
 > 关联：PLAN.md §1 L2 遥测 / §4 里程碑 M1；指标口径见 C 的 `docs/metrics-v0.md`。
 
 ---
@@ -127,7 +127,7 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 |---|---|---|---|
 | `format` | string | ✓ | 恒为 `"rheotrace-jsonl"` |
 | `schema_version` | int | ✓ | 恒为 `0`（v0） |
-| `initial_version` | int | ✓ | run 开始时生效的权重版本，默认 `0`；中途挂到已训练进程时填当前版本 |
+| `initial_version` | int | ✓ | run 开始时生效的权重版本（全新训练从 0 起；中途挂到已训练进程时填当前版本） |
 | `engine` | string | ✓ | 引擎标识，如 `"verl+vllm-0.6.3"`、`"rheotrace-gen"`（合成） |
 | `model` | string | ✓ | 模型标识，如 `"Qwen2.5-1.5B-Instruct"` |
 | `clock` | string | ✓ | `"wall_ns_epoch"`（默认）\| `"mono_ns_raw"` |
