@@ -121,6 +121,11 @@ def validate(source: Source, *, strict: bool = True) -> ValidationReport:
     strict=True：存在任一 error 即抛 ValidationError（携带完整报告）；
     strict=False：总是返回报告。
     """
+    if isinstance(source, dict):
+        raise TypeError(
+            "validate() 的 source 应为 trace 文件路径或事件 dict 的序列；"
+            "传入单个事件 dict 会按其键迭代，产生误导性报告"
+        )
     rep = ValidationReport()
     _check(source, rep)
     if strict:
