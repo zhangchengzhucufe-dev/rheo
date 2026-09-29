@@ -47,20 +47,32 @@ def _now() -> int:
 
 
 def _install_gen_hook():
+    import inspect
+
     import verl.experimental.agent_loop.agent_loop as al
 
     # ---- engine-level schedule span around each generation step -----------
+    # 原方法带 @auto_await：fit() 是同步调用（无事件循环时内部 asyncio.run），
+    # 钩子必须是普通函数；异步上下文时包装 coroutine 保住完成时序
     _orig_mgr_gen = al.AgentLoopManager.generate_sequences
 
-    async def traced_mgr_gen(self, prompts):
+    def traced_mgr_gen(self, prompts):
         now = _now()
         prev = getattr(self, "_rheo_prev_gen_end", None)
         if prev is not None and now >= prev:
             spill("phase_span", phase="schedule", t_start=prev, t_end=now)
         self._rheo_prev_gen_end = None
-        out = await _orig_mgr_gen(self, prompts)
+        result = _orig_mgr_gen(self, prompts)
+        if inspect.iscoroutine(result):
+
+            async def _afinish():
+                out = await result
+                self._rheo_prev_gen_end = _now()
+                return out
+
+            return _afinish()
         self._rheo_prev_gen_end = _now()
-        return out
+        return result
 
     al.AgentLoopManager.generate_sequences = traced_mgr_gen
     print("[rheo-trace] hook: schedule spans (AgentLoopManager)", flush=True)

@@ -26,6 +26,8 @@ DATA_DIR=${DATA_DIR:-$HOME/datasets/rheo/gsm8k}
 RESULTS="$REPO_DIR/bench/results/m0-baseline"
 CKPT_DIR=${CKPT_DIR:-$HOME/tools/rheo-checkpoints}
 STEPS=${STEPS:-60}
+BATCH=${BATCH:-16}
+MAX_RESP=${MAX_RESP:-512}
 TEST_FREQ=${TEST_FREQ:-10}
 VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-true}
 EXP=${EXP:-grpo-lora-qwen25-1.5b}
@@ -65,12 +67,13 @@ run_training() {
 
 while true; do
   echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE)"
-  if run_training \
+  ATTEMPT_LOG="$RESULTS/logs/attempt-$(date +%H%M%S).log"
+  run_training \
   data.train_files="$DATA_DIR/train.parquet" \
   data.val_files="$DATA_DIR/test.parquet" \
-  data.train_batch_size=16 \
+  data.train_batch_size="$BATCH" \
   data.max_prompt_length=256 \
-  data.max_response_length=512 \
+  data.max_response_length="$MAX_RESP" \
   algorithm.adv_estimator=grpo \
   algorithm.use_kl_in_reward=false \
   actor_rollout_ref.model.path="$MODEL" \
@@ -107,13 +110,19 @@ while true; do
   trainer.logger='[console,tensorboard]' \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \
-  trainer.default_local_dir="$CKPT_DIR/$EXP"
-  then
+  trainer.default_local_dir="$CKPT_DIR/$EXP" > "$ATTEMPT_LOG" 2>&1
+  rc=$?
+  tail -40 "$ATTEMPT_LOG"
+  if [ "$rc" -eq 0 ]; then
     echo "[run_grpo] training finished ok"
     break
   fi
-  rc=$?
-  echo "[run_grpo] attempt failed (rc=$rc), retrying with lower util" >&2
+  echo "[run_grpo] attempt failed (rc=$rc)" >&2
+  # 只对 vLLM 显存检查失败降 util 重试；其他错误（配置/代码）直接失败
+  if ! grep -q "Free memory on device" "$ATTEMPT_LOG"; then
+    echo "[run_grpo] not a free-memory failure; giving up (full log: $ATTEMPT_LOG)" >&2
+    exit 1
+  fi
   if [ "$UTIL" = "0.55" ]; then
     echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
     exit 1
