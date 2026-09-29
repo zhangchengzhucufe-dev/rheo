@@ -16,7 +16,11 @@ def main(argv: list[str] | None = None) -> int:
 
     v = sub.add_parser("validate", help="校验 trace 文件（.jsonl / .jsonl.gz）")
     v.add_argument("files", nargs="+")
-    v.add_argument("--lenient", action="store_true", help="只报告不拒绝（退出码恒 0）")
+    v.add_argument(
+        "--lenient",
+        action="store_true",
+        help="数据问题只报告不拒绝；无法读取的文件仍以退出码 2 报告",
+    )
 
     g = sub.add_parser("gen", help="生成合成 trace")
     g.add_argument("--preset", choices=sorted(PRESETS), default="grpo")
