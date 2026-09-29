@@ -253,7 +253,9 @@ writer 可对 `lp` 做固定位数舍入以省体积——这是 **writer 的选
 {"ts":1727600003200000001,"type":"run_end","run_id":"r-9f3c1a2b","summary":{"segments":1,"weight_syncs":2,"gen_tokens":289}}
 ```
 
-（示例中 `lp` 截断为 3 个值示意。）
+（示例为**显示截断**，照抄会触发校验诊断：`lp` 仅示 3 值而 `n=64` → E13，实际须逐值等长；
+finished 段 289 token 只铺了首个 64-token 块 → W03，实际须有覆盖至 `n_gen_tokens` 的后续
+`token_logprob` 块。其余事件逐字合法。）
 
 ---
 
