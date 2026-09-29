@@ -54,8 +54,14 @@ def _sample_length(cfg: SynthConfig, rng: random.Random) -> int:
 
 def _decode_exec(traj, batch, t0, t1, bv, n_gen, committed=True):
     return {
-        "ev": "exec", "traj": traj, "batch": batch, "phase": "decode",
-        "t0": int(t0), "t1": int(t1), "bv": bv, "n_gen": int(n_gen),
+        "ev": "exec",
+        "traj": traj,
+        "batch": batch,
+        "phase": "decode",
+        "t0": int(t0),
+        "t1": int(t1),
+        "bv": bv,
+        "n_gen": int(n_gen),
         "committed": committed,
     }
 
@@ -64,8 +70,13 @@ def generate_events(cfg: SynthConfig) -> tuple[list[dict], dict]:
     """生成 canon 事件列表（按时间排序）与真值字典。"""
     rng = random.Random(cfg.seed)
     header = {
-        "ev": "header", "format": "rheo-canon-v0", "clock": "mono_ns",
-        "model": cfg.model, "P": MODEL_P, "L": MODEL_L, "d": MODEL_D,
+        "ev": "header",
+        "format": "rheo-canon-v0",
+        "clock": "mono_ns",
+        "model": cfg.model,
+        "P": MODEL_P,
+        "L": MODEL_L,
+        "d": MODEL_D,
         "world_size": cfg.world_size,
     }
     body: list[dict] = []
@@ -97,10 +108,18 @@ def generate_events(cfg: SynthConfig) -> tuple[list[dict], dict]:
 
         # prefill 全员同时
         for j in range(cfg.group_size):
-            body.append({
-                "ev": "exec", "traj": f"t{i}-{j}", "batch": batch, "phase": "prefill",
-                "t0": batch_start, "t1": d0, "bv": ver, "n_prompt": cfg.prompt_tokens,
-            })
+            body.append(
+                {
+                    "ev": "exec",
+                    "traj": f"t{i}-{j}",
+                    "batch": batch,
+                    "phase": "prefill",
+                    "t0": batch_start,
+                    "t1": d0,
+                    "bv": ver,
+                    "n_prompt": cfg.prompt_tokens,
+                }
+            )
 
         batch_max_end = 0
         if is_global_env:
@@ -115,8 +134,9 @@ def generate_events(cfg: SynthConfig) -> tuple[list[dict], dict]:
                     dur2 = (lengths[j] - n1) / cfg.decode_tps * 1e9
                     body.append(_decode_exec(traj, batch, end, end + dur2, ver, lengths[j] - n1))
                     end += dur2
-                body.append({"ev": "env_wait", "traj": traj,
-                             "t0": t_mid, "t1": t_mid + cfg.env_wait_dur_ns})
+                body.append(
+                    {"ev": "env_wait", "traj": traj, "t0": t_mid, "t1": t_mid + cfg.env_wait_dur_ns}
+                )
                 body.append({"ev": "traj_end", "traj": traj, "t": int(end), "status": "finished"})
                 batch_max_end = max(batch_max_end, end)
             env_global_total += cfg.env_wait_dur_ns
@@ -136,11 +156,21 @@ def generate_events(cfg: SynthConfig) -> tuple[list[dict], dict]:
                 dur1 = n1 / cfg.decode_tps * 1e9
                 body.append(_decode_exec(traj, batch, d0, d0 + dur1, ver, n1, committed))
                 ew0 = d0 + dur1
-                body.append({"ev": "env_wait", "traj": traj,
-                             "t0": ew0, "t1": ew0 + cfg.env_wait_dur_ns})
+                body.append(
+                    {"ev": "env_wait", "traj": traj, "t0": ew0, "t1": ew0 + cfg.env_wait_dur_ns}
+                )
                 dur2 = (n - n1) / cfg.decode_tps * 1e9
-                body.append(_decode_exec(traj, batch, ew0 + cfg.env_wait_dur_ns,
-                                         ew0 + cfg.env_wait_dur_ns + dur2, ver, n - n1, committed))
+                body.append(
+                    _decode_exec(
+                        traj,
+                        batch,
+                        ew0 + cfg.env_wait_dur_ns,
+                        ew0 + cfg.env_wait_dur_ns + dur2,
+                        ver,
+                        n - n1,
+                        committed,
+                    )
+                )
                 end = ew0 + cfg.env_wait_dur_ns + dur2
             else:
                 body.append(_decode_exec(traj, batch, d0, d0 + dur, ver, n, committed))
@@ -164,8 +194,9 @@ def _truth(events: list[dict], sync_total: int, gap_total: int, env_global_total
     execs = [e for e in events if e["ev"] == "exec"]
     t0 = min(e["t0"] for e in execs)
     ends = [e["t1"] for e in execs] + [e["t1"] for e in events if e["ev"] == "env_wait"]
-    ends += ([e["t1"] for e in events if e["ev"] == "sync"]
-             + [e["t"] for e in events if e["ev"] == "traj_end"])
+    ends += [e["t1"] for e in events if e["ev"] == "sync"] + [
+        e["t"] for e in events if e["ev"] == "traj_end"
+    ]
     t1 = max(ends)
     decode_execs = [e for e in execs if e["phase"] == "decode"]
     gen_all = sum(e["n_gen"] for e in decode_execs)

@@ -220,8 +220,14 @@ def analyze(
     model_config_path: str | Path | None = None,
 ) -> Analysis:
     cfg = resolve_model_config(trace, model_config_path)
-    peak = float(peak_tflops) if peak_tflops is not None else (
-        trace.header.peak_tflops if trace.header.peak_tflops is not None else DEFAULT_PEAK_TFLOPS
+    peak = (
+        float(peak_tflops)
+        if peak_tflops is not None
+        else (
+            trace.header.peak_tflops
+            if trace.header.peak_tflops is not None
+            else DEFAULT_PEAK_TFLOPS
+        )
     )
     world = max(1, trace.header.world_size)
 
@@ -440,8 +446,10 @@ def analyze(
             "占用率/掉队口径不适用，S1 已置 0；待 batch_id 增量后恢复"
         )
     elif n_staggered:
-        warns.append(f"W-BATCH-STAGGERED：{n_staggered}/{len(batch_occs)} 个批从未同时满员，"
-                     "其掉队时间未计入 S1")
+        warns.append(
+            f"W-BATCH-STAGGERED：{n_staggered}/{len(batch_occs)} 个批从未同时满员，"
+            "其掉队时间未计入 S1"
+        )
     if n_no_prefill:
         warns.append(
             f"W-NO-PREFILL：{n_no_prefill} 条轨迹有 decode 无 prefill，attention 项按 KV=0 估计"
