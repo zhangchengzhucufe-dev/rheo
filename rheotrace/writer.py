@@ -46,6 +46,12 @@ class TraceWriter:
 
     with TraceWriter(path, engine=..., model=...) as w:
         w.emit("segment_start", seg_id=..., group_id=..., birth_version=..., t_start=..., ...)
+
+    时钟约定：自动补的 ts 是墙钟（now_ns），因此调用方自带的时间戳必须与之同源；
+    事件 ts 早于本 run 起始时刻立即报错——否则乱序要到 validator 才暴露，离病因很远。
+    显式安排时间戳时以 ``w.run_start_ts`` 为基准，且**同一文件内全部事件显式传 ts**
+    （auto-now 与显式未来/过去时刻混流必乱序），close 时用 ``close(end_ts=...)`` 收尾。
+    虚拟时钟（合成/回放）也可以改用 ``write()`` 并自带完整时间线。
     """
 
     def __init__(
@@ -64,6 +70,7 @@ class TraceWriter:
         self._fh = _open_sink(path)
         self._counts: dict[str, int] = {}
         self._closed = False
+        self.run_start_ts: int | None = None
         self.emit(
             RUN_START,
             format=FORMAT_NAME,
@@ -103,15 +110,31 @@ class TraceWriter:
     def _write(self, ev: dict) -> dict:
         if self._closed:
             raise RheotraceError("TraceWriter 已关闭，不能再写入事件")
+        if self.run_start_ts is None:
+            self.run_start_ts = ev["ts"]  # 第一个事件即 run_start
+        elif ev["ts"] < self.run_start_ts:
+            raise RheotraceError(
+                f"事件 {ev['type']} ts={ev['ts']} 早于本 run 起始时刻 {self.run_start_ts}："
+                "TraceWriter 以墙钟补 ts，调用方时间戳必须与之同源；"
+                "虚拟时钟请改用 write() 并自带完整时间线"
+            )
         self._fh.write(dumps_line(ev) + "\n")
         self._counts[ev["type"]] = self._counts.get(ev["type"], 0) + 1
         return ev
 
-    def close(self) -> None:
-        """落 run_end（带按类型计数）并关文件；幂等。"""
+    def close(self, *, end_ts: int | None = None) -> None:
+        """落 run_end（带按类型计数）并关文件；幂等。
+
+        end_ts：显式指定 run_end 时刻。手写时间线（显式 ts 的事件流）必须用它——
+        默认 auto-now 会早于此前显式的未来时刻，产生 E04。
+        """
         if self._closed:
             return
-        self.emit(RUN_END, summary={"events_by_type": dict(sorted(self._counts.items()))})
+        summary = {"events_by_type": dict(sorted(self._counts.items()))}
+        if end_ts is None:
+            self.emit(RUN_END, summary=summary)
+        else:
+            self.emit(RUN_END, ts=end_ts, summary=summary)
         self._closed = True  # 置位须在 run_end 落盘之后，否则被自己的写入守卫拦下
         self._fh.close()
 

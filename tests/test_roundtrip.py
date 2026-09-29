@@ -69,10 +69,17 @@ def test_trace_writer_autofill(tmp_path):
     """插桩用 writer：自动补 ts/run_id、自动落 run_start/run_end。"""
     path = tmp_path / "w.jsonl"
     with rheotrace.TraceWriter(path, engine="test-engine", model="test-model") as w:
-        ev = w.emit("weight_sync", version=1, t_start=1, t_end=2, mode="full")
+        base = w.run_start_ts  # 同一 writer 的守卫基准，作显式时间戳的锚
+        ev = w.emit("weight_sync", version=1, t_start=base + 1, t_end=base + 2, mode="full")
         assert ev["run_id"] == w.run_id and isinstance(ev["ts"], int)
         w.emit_raw(
-            {"type": "phase_span", "seg_id": "s-1", "phase": "decode", "t_start": 1, "t_end": 2}
+            {
+                "type": "phase_span",
+                "seg_id": "s-1",
+                "phase": "decode",
+                "t_start": base + 2,
+                "t_end": base + 3,
+            }
         )
     events = rheotrace.read(path)
     types = [e["type"] for e in events]
@@ -85,7 +92,9 @@ def test_trace_writer_autofill(tmp_path):
 def test_trace_writer_gz_and_close_idempotent(tmp_path):
     path = tmp_path / "w.jsonl.gz"
     w = rheotrace.TraceWriter(path, engine="e", model="m")
-    w.emit("phase_span", seg_id="s", phase="schedule", t_start=0, t_end=1)
+    w.emit(
+        "phase_span", seg_id="s", phase="schedule", t_start=w.run_start_ts, t_end=w.run_start_ts + 1
+    )
     w.close()
     w.close()  # 幂等
     assert len(rheotrace.read(path)) == 3  # run_start + span + run_end
