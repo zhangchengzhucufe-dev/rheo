@@ -89,6 +89,14 @@ def test_unknown_preset_raises():
         rheotrace.generate(preset="nope")
 
 
+def test_run_start_carries_n_workers():
+    """规格 §4.1：n_workers 必须在 run_start 顶层（C 的 per-GPU 指标依赖）。"""
+    ev = rheotrace.generate(preset="grpo", seed=0, n_workers=6)
+    assert ev[0]["n_workers"] == 6
+    ev2 = rheotrace.generate(preset="agent", seed=0)
+    assert ev2[0]["n_workers"] == rheotrace.gen.PRESETS["agent"].n_workers
+
+
 def test_degenerate_params_produce_valid_empty_trace():
     """groups_per_step/group_size 为 0 不应崩溃：产出的空 run 过校验（W07 如实报告）。"""
     for kw in ({"group_size": 0}, {"groups_per_step": 0}, {"n_steps": 0}):
