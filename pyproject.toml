@@ -12,6 +12,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+# bench/analysis：numpy（统计）+ matplotlib（报告插图）
+analysis = ["numpy>=1.26", "matplotlib>=3.8"]
 
 # 平面布局，与 PLAN.md §3 的目录结构一一对应
 [tool.setuptools.packages.find]
