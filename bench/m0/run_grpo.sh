@@ -75,8 +75,10 @@ run_training() {
 # calculate_log_probs=true: vLLM 返回 token logprobs（trace 带 token_logprob，W03 消失）；
 # 默认 decoupled 模式下 actor 仍重算 old_log_probs，训练语义不变
 
+ATTEMPTS_LEFT=${MAX_ATTEMPTS:-6}
+
 while true; do
-  echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE)"
+  echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE, 剩余重试 $((ATTEMPTS_LEFT - 1)))"
   ATTEMPT_LOG="$RESULTS/logs/attempt-$(date +%H%M%S)-$$.log"
   rc=0
   run_training \
@@ -114,6 +116,7 @@ while true; do
   custom_reward_function.name=compute_score \
   trainer.nnodes=1 \
   trainer.n_gpus_per_node=1 \
+  actor_rollout_ref.nccl_timeout=7200 \
   trainer.total_training_steps="$STEPS" \
   trainer.total_epochs=10 \
   trainer.val_before_train="$VAL_BEFORE_TRAIN" \
@@ -129,18 +132,29 @@ while true; do
     break
   fi
   echo "[run_grpo] attempt failed (rc=$rc)" >&2
-  # 只对 vLLM 显存检查失败降 util 重试；其他错误（配置/代码）直接失败
-  if ! grep -q "Free memory on device" "$ATTEMPT_LOG"; then
-    echo "[run_grpo] not a free-memory failure; giving up (full log: $ATTEMPT_LOG)" >&2
+  ATTEMPTS_LEFT=$((ATTEMPTS_LEFT - 1))
+  if [ "$ATTEMPTS_LEFT" -le 0 ]; then
+    echo "[run_grpo] retry budget exhausted; giving up (full log: $ATTEMPT_LOG)" >&2
     exit 1
   fi
-  if [ "$UTIL" = "0.55" ]; then
-    echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
+  # WDDM 瞬态家族（显存检查失败 / CUDA unknown / device not ready / 分配器断言）
+  # 都值得重试；resume_mode=auto 会从最新 checkpoint 续跑
+  if grep -q "Free memory on device" "$ATTEMPT_LOG"; then
+    if [ "$UTIL" = "0.55" ]; then
+      echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
+      exit 1
+    fi
+    UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
+  elif grep -qE "CUDA error|device not ready|INTERNAL ASSERT|invalid resource handle" "$ATTEMPT_LOG"; then
+    echo "[run_grpo] transient CUDA/driver failure detected; retrying with same util" >&2
+  elif grep -q "collective operation timeout\|ActorDiedError" "$ATTEMPT_LOG"; then
+    echo "[run_grpo] NCCL/actor timeout under GPU contention; retrying with same util" >&2
+  else
+    echo "[run_grpo] unrecognized failure; giving up (full log: $ATTEMPT_LOG)" >&2
     exit 1
   fi
-  UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
   # 清掉残留 ray 集群，避免下次 attempt 挂到死 worker 上
   "$PYTHON" -m ray stop --force >/dev/null 2>&1 || true
-  sleep 10
+  sleep 15
 done
 
