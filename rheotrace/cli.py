@@ -62,7 +62,11 @@ def main(argv: list[str] | None = None) -> int:
         }.items()
         if v is not None
     }
-    n = generate_file(args.out, preset=args.preset, seed=args.seed, **overrides)
+    try:
+        n = generate_file(args.out, preset=args.preset, seed=args.seed, **overrides)
+    except OSError as e:
+        print(f"{args.out}: 无法写入（{e.strerror or e}）")
+        return 2
     print(f"{args.out}: {n} events (preset={args.preset}, seed={args.seed})")
     return 0
 
