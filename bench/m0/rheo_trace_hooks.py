@@ -21,7 +21,9 @@ Patched sites:
 No-op (zero imports beyond os) unless RHEO_TRACE=1.
 """
 
+import contextvars
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -104,7 +106,7 @@ def _install_gen_hook():
     print("[rheo-trace] hook: schedule spans (AgentLoopManager)", flush=True)
 
 
-_GEN_CV = None  # lazily created ContextVar (created inside install())
+_GEN_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_gen_timing", default=None)
 
 
 def _install_gen_timing_hook():
@@ -113,13 +115,8 @@ def _install_gen_timing_hook():
     每个 sample 的 run() 在自己的 asyncio.Task 里执行，通过 ContextVar 把
     计时槽传给共享的 wrapper——并发 sample 互不踩踏。
     """
-    import contextvars
 
     import verl.workers.rollout.llm_server as lls
-
-    global _GEN_CV
-    if _GEN_CV is None:
-        _GEN_CV = contextvars.ContextVar("rheo_gen_timing", default=None)
 
     orig_generate = lls.LLMServerClient.generate
 
@@ -176,12 +173,14 @@ def _install_segment_hook():
                 )
             lps = getattr(output, "response_logprobs", None)
             if lps:
+                # -inf/NaN 会写出非法 JSON（rheotrace allow_nan=False），钳到有限值
+                lp = [float(x) if math.isfinite(float(x)) else -1e30 for x in lps]
                 spill(
                     "token_logprob",
                     seg_id=seg_id,
                     start_idx=0,
-                    n=len(lps),
-                    lp=[float(x) for x in lps],
+                    n=len(lp),
+                    lp=lp,
                 )
             spill(
                 "segment_end",

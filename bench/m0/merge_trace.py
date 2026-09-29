@@ -19,6 +19,7 @@ Usage:
 import argparse
 import glob
 import json
+import math
 from pathlib import Path
 
 from rheotrace import validate, write
@@ -26,16 +27,24 @@ from rheotrace import validate, write
 
 def load_spill(spill_dir: Path) -> list[dict]:
     events: list[dict] = []
+    bad = 0
     for path in sorted(glob.glob(str(spill_dir / "spill-*.jsonl"))):
         with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
-                ev = json.loads(line)
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    # 进程被 kill -9 时可能留下半行；跳过并计数
+                    bad += 1
+                    continue
                 if ev.get("type") == "trace_boot":
                     continue
                 events.append(ev)
+    if bad:
+        print(f"note: skipped {bad} unparseable spill line(s)")
     return events
 
 
@@ -105,6 +114,12 @@ def main() -> None:
     for ev in raw:
         if ev["type"] == "segment_end":
             ev["birth_version"] = births.get(ev.get("seg_id"), 0)
+
+    # 2.5) 双保险：非有限浮点（-inf/NaN）会让 rheotrace.write 崩溃（allow_nan=False），
+    # 钩子层已清洗，这里对历史/异常 spill 再钳一次
+    for ev in raw:
+        if ev["type"] == "token_logprob":
+            ev["lp"] = [v if math.isfinite(v) else -1e30 for v in ev.get("lp", [])]
 
     # 3) emit final trace
     run_start = {
