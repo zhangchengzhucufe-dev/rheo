@@ -50,23 +50,22 @@ def main() -> None:
 
     if args.tb_dir is None:
         root = os.path.join(results, "tb")
-        # 事件可能在 tb/<project>/<exp>/ 子目录，也可能平铺在 tb/ 根下
-        exp_dirs = [
-            d
-            for d in glob.glob(os.path.join(root, "*", "*"))
-            if glob.glob(os.path.join(d, "events.out.*"))
+        # run_grpo.sh 用 TENSORBOARD_DIR=tb/<EXP>：事件在 tb/ 下一层；
+        # 兼容更老的 tb/<project>/<exp>/ 两层与直接平铺在 tb/ 根下三种布局
+        candidates = [
+            root,
+            *glob.glob(os.path.join(root, "*")),
+            *glob.glob(os.path.join(root, "*", "*")),
         ]
-        if exp_dirs:
-            args.tb_dir = max(
-                exp_dirs,
-                key=lambda d: max(
-                    os.path.getmtime(f) for f in glob.glob(os.path.join(d, "events.out.*"))
-                ),
-            )
-        elif glob.glob(os.path.join(root, "events.out.*")):
-            args.tb_dir = root
-        else:
+        exp_dirs = [d for d in candidates if glob.glob(os.path.join(d, "events.out.*"))]
+        if not exp_dirs:
             raise SystemExit(f"no tensorboard events under {root}")
+        args.tb_dir = max(
+            exp_dirs,
+            key=lambda d: max(
+                os.path.getmtime(f) for f in glob.glob(os.path.join(d, "events.out.*"))
+            ),
+        )
         print(f"using newest experiment dir: {args.tb_dir}")
 
     series = load_scalars(args.tb_dir)
