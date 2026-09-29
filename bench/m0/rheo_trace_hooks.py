@@ -158,3 +158,6 @@ def install() -> None:
     stl.SingleTurnAgentLoop.run = traced_loop_run
 
     spill("trace_boot", pid=os.getpid())
+
+
+install()

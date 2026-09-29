@@ -53,7 +53,19 @@ export RHEO_TRACE=${RHEO_TRACE:-0}
 export RHEO_TRACE_HOOKS="$REPO_DIR/bench/m0/rheo_trace_hooks.py"
 export RHEO_TRACE_DIR=${RHEO_TRACE_DIR:-$RESULTS/traces-spill}
 
-exec "$PYTHON" -m verl.trainer.main_ppo \
+# rollout util 按启动时实际空闲显存动态算（Windows 桌面占用会波动，vLLM 0.12
+# 启动时检查 free < util*total 直接拒绝）。边距 0.6GB；若 vLLM 仍报 Free memory
+# 不足则降 0.06 重试，最低 0.55（KV 会小、生成会慢，但能跑）。
+UTIL=$("$PYTHON" -c "import torch; f,t=torch.cuda.mem_get_info(0); f/=2**30; t/=2**30; print(f'{min(0.72, max(0.55, (f-0.6)/t)):.2f}')")
+FREE=$("$PYTHON" -c "import torch; print(f'{torch.cuda.mem_get_info(0)[0]/2**30:.2f}')")
+
+run_training() {
+  "$PYTHON" -m verl.trainer.main_ppo "$@"
+}
+
+while true; do
+  echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE)"
+  if run_training \
   data.train_files="$DATA_DIR/train.parquet" \
   data.val_files="$DATA_DIR/test.parquet" \
   data.train_batch_size=16 \
@@ -79,7 +91,7 @@ exec "$PYTHON" -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.n=8 \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
+  actor_rollout_ref.rollout.gpu_memory_utilization="$UTIL" \
   actor_rollout_ref.rollout.enforce_eager=true \
   actor_rollout_ref.rollout.max_model_len=1024 \
   actor_rollout_ref.rollout.max_num_seqs=48 \
@@ -96,3 +108,17 @@ exec "$PYTHON" -m verl.trainer.main_ppo \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \
   trainer.default_local_dir="$CKPT_DIR/$EXP"
+  then
+    echo "[run_grpo] training finished ok"
+    break
+  fi
+  rc=$?
+  echo "[run_grpo] attempt failed (rc=$rc), retrying with lower util" >&2
+  if [ "$UTIL" = "0.55" ]; then
+    echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
+    exit 1
+  fi
+  UTIL=$("$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
+  sleep 10
+done
+
