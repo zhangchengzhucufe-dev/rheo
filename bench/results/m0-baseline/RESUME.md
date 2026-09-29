@@ -22,11 +22,28 @@
    - `bench/m0/merge_trace.py`（spill 合并 + 账本重放 + validate；有单测覆盖）
    - 合成 spill→merge→validate 全流程已测通（tests/test_merge_trace.py 3 个用例过）
 
+## 当前进行中（2026-09-29 17:15 起）
+
+**正式跑 r1 已启动**：`RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=5`，
+日志 `logs/train-r1.log` + `logs/attempt-171340.log`，spill → `traces-spill/`，
+checkpoint 每 5 步 → `~/tools/rheo-checkpoints/grpo-lora-qwen25-1.5b/`。
+中断后：清理 ray 残留 + 删 gpu.lock，**重跑同一命令**即从 checkpoint 续跑。
+注意：pkill 的模式别写进启动命令里（会匹配自杀）；清理与启动分两条命令跑。
+
+## 历史修复记录（迷你端到端暴露的 4 个 bug，均已修 + 推送）
+
+1. hooks 的 `install()` 定义了但从未调用（钩子静默失效）
+2. weight_sync 钩子打在 worker 侧会破坏 @register 分发（RayWorkerGroup 找不到方法）
+   → 改打驱动侧 `CheckpointEngineManager.update_weights`
+3. schedule 钩子必须是普通函数（原方法 @auto_await，fit 同步调用拿到 coroutine）
+4. merge 先排序后改写区间事件 ts（E04）/ segment_start 落盘时间晚于 span（E07）
+   → 先归一化再排序 + segment_start 带显式事件时间
+
 ## 重启后下一步（按序）
 
 1. `cd ~/rheo-a && git pull`（确认在 feat/m0-baseline 最新）
 2. 清残留：`pkill -9 -f "ray::"`、删 `/mnt/c/Users/15985/tools/.locks/gpu.lock`（若持有者已死）
-3. 直接起**正式跑**（冒烟不必重跑）：
+3. （若 r1 未完成）续跑正式跑：
    ```bash
    RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=5 \
      ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh \
