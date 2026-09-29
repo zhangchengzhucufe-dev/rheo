@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# M0 baseline: verl GRPO + LoRA + 8bit optimizer, Qwen2.5-1.5B-Instruct, single RTX 3060 (6GB).
+#
+# 必须经 GPU 锁运行:
+#   ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh
+# 冒烟(3 step):  STEPS=3 TEST_FREQ=-1 VAL_BEFORE_TRAIN=false EXP=smoke \
+#                  ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh
+#
+# 显存策略(6GB 卡 + Windows 桌面占用约 1-2.5GB):
+#   - 生成期 vLLM 独占 GPU(util=0.75 → KV ~1.5GB), util 太小(0.58)时 KV 仅
+#     ~0.5GB, 生成陷入抢占-重算循环(实测 35min 跑不完一步)
+#   - 训练期 vLLM sleep level 2 全量释放, FSDP 装载 3.1GB 主干
+#   - lora.merge=true: 每步把 LoRA 合并进基础权重同步给 vLLM → sleep level 2
+#     (默认 lora_as_adapter 模式只 sleep level 1, vLLM 保留 3.1GB 权重,
+#      6GB 卡上 FSDP 加载训练必然爆显存 —— WDDM 报 "device not ready")
+#   - actor: FSDP param/optimizer 全 offload, LoRA 冻结主干, bnb AdamW8bit
+#   - 不加载 reference policy(GRPO 无 KL), 省一份 3GB 权重
+#   - WSL2 不支持 CUDA IPC, 权重传输走宿主共享内存(VERL_DISABLE_CUDA_IPC=1,
+#     需 verl/utils/device.py 本地补丁, 见 bench/results/m0-baseline/env.md)
+set -euo pipefail
+
+PYTHON=${PYTHON:-$HOME/tools/venvs/rheo/bin/python}
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MODEL=${MODEL:-$HOME/models/Qwen2.5-1.5B-Instruct}
+DATA_DIR=${DATA_DIR:-$HOME/datasets/rheo/gsm8k}
+RESULTS="$REPO_DIR/bench/results/m0-baseline"
+CKPT_DIR=${CKPT_DIR:-$HOME/tools/rheo-checkpoints}
+STEPS=${STEPS:-60}
+TEST_FREQ=${TEST_FREQ:-10}
+VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-true}
+EXP=${EXP:-grpo-lora-qwen25-1.5b}
+
+mkdir -p "$RESULTS/logs" "$CKPT_DIR"
+
+# ray/vllm 在 WSL2 下的稳定性开关
+export RAY_memory_monitor_refresh_ms=0
+export TOKENIZERS_PARALLELISM=false
+export VLLM_LOGGING_LEVEL=WARNING
+export HYDRA_FULL_ERROR=1
+export TENSORBOARD_DIR="$RESULTS/tb"
+# WSL2 不支持 CUDA IPC：verl 权重传输走宿主共享内存
+# （需要 ~/tools/venvs/rheo 中 verl/utils/device.py 的本地补丁，见 env.md）
+export VERL_DISABLE_CUDA_IPC=1
+# WSL2/WDDM：vLLM 进程 sleep 释放数 GB 会破坏训练进程的经典缓存分配器
+# （CUDACachingAllocator INTERNAL ASSERT），改用 VMM expandable segments 并
+# 禁止 verl 运行时切换回经典池（device.py 本地补丁）
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export RHEO_KEEP_EXPANDABLE=1
+
+exec "$PYTHON" -m verl.trainer.main_ppo \
+  data.train_files="$DATA_DIR/train.parquet" \
+  data.val_files="$DATA_DIR/test.parquet" \
+  data.train_batch_size=16 \
+  data.max_prompt_length=256 \
+  data.max_response_length=512 \
+  algorithm.adv_estimator=grpo \
+  algorithm.use_kl_in_reward=false \
+  actor_rollout_ref.model.path="$MODEL" \
+  actor_rollout_ref.model.enable_gradient_checkpointing=true \
+  actor_rollout_ref.model.lora_rank=16 \
+  actor_rollout_ref.model.lora_alpha=32 \
+  actor_rollout_ref.model.target_modules=all-linear \
+  ++actor_rollout_ref.model.lora.merge=true \
+  actor_rollout_ref.actor.use_kl_loss=false \
+  actor_rollout_ref.actor.optim.lr=1e-4 \
+  actor_rollout_ref.actor.optim.optimizer_impl=bitsandbytes.optim \
+  actor_rollout_ref.actor.optim.optimizer=AdamW8bit \
+  actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.actor.fsdp_config.param_offload=true \
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
+  actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+  actor_rollout_ref.rollout.n=8 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
+  actor_rollout_ref.rollout.enforce_eager=true \
+  actor_rollout_ref.rollout.max_model_len=1024 \
+  actor_rollout_ref.rollout.max_num_seqs=48 \
+  custom_reward_function.path="$REPO_DIR/bench/m0/gsm8k_reward.py" \
+  custom_reward_function.name=compute_score \
+  trainer.nnodes=1 \
+  trainer.n_gpus_per_node=1 \
+  trainer.total_training_steps="$STEPS" \
+  trainer.total_epochs=10 \
+  trainer.val_before_train="$VAL_BEFORE_TRAIN" \
+  trainer.test_freq="$TEST_FREQ" \
+  trainer.save_freq=-1 \
+  trainer.logger='[console,tensorboard]' \
+  trainer.project_name=rheo-m0 \
+  trainer.experiment_name="$EXP" \
+  trainer.default_local_dir="$CKPT_DIR/$EXP"
