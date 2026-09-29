@@ -390,7 +390,9 @@ def _simulate(p: GenParams, preset: str) -> list[dict]:
             lane_end[lane] = pl["end"]
             step_plans.append(pl)
         all_plans.extend(step_plans)
-        if step < p.n_steps:
+        if step_plans and step < p.n_steps:
+            # 无段可规划（groups_per_step/group_size 为 0 的退化配置）时跳过同步：
+            # 产出的 run 无 segment，validator 会以 W07 如实报告
             # 同步放在本步"规划时长"的 straddle_frac 分位（不是绝对时刻的分位！），
             # 长尾段因此横跨同步窗口，被切出 pause/resume
             step_base = base_t + gap
