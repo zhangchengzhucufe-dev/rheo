@@ -48,10 +48,16 @@ def _sniff_format(path: Path) -> str | None:
 
 
 def read_trace(path: str | Path) -> Trace:
-    """读入 trace 文件并转为 canon。格式按 header 的 format 字段分发。"""
+    """读入 trace 文件并转为 canon。格式按 header 的 format 字段分发。
+
+    `.gz` 压缩文件不走字节嗅探（gzip 二进制猜格式必错，B↔C 互校结论）：
+    直接路由给 rheotrace reader 透明解压；canon v0 不支持压缩。
+    """
     path = Path(path)
     if not path.is_file():
         raise TraceError(f"trace 文件不存在：{path}")
+    if path.name.endswith(".gz"):
+        return _read_rheotrace(path)
     fmt = _sniff_format(path)
     if fmt == canon.CANON_FORMAT:
         return canon.read_canon(path)
@@ -59,7 +65,7 @@ def read_trace(path: str | Path) -> Trace:
         return _read_rheotrace(path)
     raise TraceError(
         f"不认识的 trace 格式（format={fmt!r}）：{path}。"
-        f"支持：{canon.CANON_FORMAT}、{_RHEOTRACE_FORMAT}"
+        f"支持：{canon.CANON_FORMAT}、{_RHEOTRACE_FORMAT}（及 .gz 压缩）"
     )
 
 

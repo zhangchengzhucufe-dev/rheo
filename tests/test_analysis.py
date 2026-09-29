@@ -356,6 +356,20 @@ def test_rheotrace_adapter_mapping(tmp_path):
     assert any(w.startswith("W-NO-BATCH") for w in a.warnings)  # 无 batch 标注 → 聚类降级
 
 
+def test_rheotrace_adapter_gz(tmp_path):
+    """`.gz` 不走字节嗅探，直接由 rheotrace reader 透明解压（B↔C 互校结论）。"""
+    import gzip
+    import json
+
+    p = tmp_path / "b.rheotrace.jsonl"
+    p.write_text("\n".join(json.dumps(e) for e in _btrace_events()) + "\n", encoding="utf-8")
+    gz = tmp_path / "b.rheotrace.jsonl.gz"
+    gz.write_bytes(gzip.compress(p.read_bytes()))
+    a = analyze(read_trace(gz), peak_tflops=10.0)
+    approx(a.t_wall_s, 0.310)
+    approx(a.thr_e2e, 280 / 0.310 / 2)
+
+
 def test_rheotrace_adapter_on_main_synthetic(tmp_path):
     """main 上 B 已交付的合成 trace 全流程跑通（TASK-C 任务 3 用 B 的 trace）。"""
     syn = REPO / "bench" / "traces" / "synthetic"
