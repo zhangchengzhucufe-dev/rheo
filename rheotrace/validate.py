@@ -95,7 +95,11 @@ class _Seg:
 
 
 def _iter_events(source: Source, rep: ValidationReport) -> Iterator[tuple[int, dict]]:
-    """统一来源：路径 → 流式行解析（gzip 截断→W01、损坏→E02、末行残缺→W01）；可迭代 → 行号=序号。"""
+    """统一来源：路径 → 流式行解析（gzip 截断→W01、损坏→E02）；可迭代 → 行号=序号。
+
+    JSON 残行的截断判定用**原始行是否以换行结尾**：无换行 = 写入被切断（W01）；
+    有换行 = 行完整但内容损坏（E02）——损坏数据不应因"恰好是末行"而降级。
+    """
     if isinstance(source, (str, Path)):
         with open_text(source) as fh:
             lineno = 0
@@ -117,19 +121,10 @@ def _iter_events(source: Source, rep: ValidationReport) -> Iterator[tuple[int, d
                 try:
                     yield lineno, json.loads(s)
                 except json.JSONDecodeError:
-                    try:
-                        nxt = _readline_lenient(fh)
-                    except RheotraceError as e:
-                        if str(e).startswith("TRUNCATED"):
-                            rep.add_warning("W01", "末行 JSON 残缺且随即流结束（截断）", lineno)
-                            return
-                        rep.add_error("E02", str(e).split(": ", 1)[1])
-                        return
-                    if nxt.strip():
-                        rep.add_error("E02", "JSON 行解析失败", lineno)
-                    else:
+                    if not line.endswith("\n"):
                         rep.add_warning("W01", "末行 JSON 残缺（文件截断）", lineno)
                         return
+                    rep.add_error("E02", "JSON 行解析失败", lineno)
     else:
         yield from enumerate(source, 1)
 
