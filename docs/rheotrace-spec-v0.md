@@ -104,6 +104,8 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 - 文件名约定：`*.rheotrace.jsonl`，gzip 压缩时 `*.rheotrace.jsonl.gz`（reader/writer 按后缀透明处理）。
 - 每行必须以 `\n` 结尾；reader 遇到末尾无换行的残行视为截断（见 §6 W01）。
 - 时间戳一律 **纳秒整数**。`clock` 默认 `wall_ns_epoch`（`time.time_ns()`，跨进程可对齐 trainer 日志）。
+- **区间一律左闭右开** `[t_start, t_end)`（与 C 的 metrics 口径一致）：端点重合时归属后一区间；
+  区间合法性只要求 `t_end ≥ t_start`（零长区间合法）。
   纯本机时长测量可用 `mono_ns_raw`（单调钟，跨进程不可比）。合成 trace 用虚拟钟（锚定生成时刻的 epoch 值），如实标注。
 
 ---
@@ -157,7 +159,7 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 | `phase` | string | ✓ | `"prefill"` \| `"decode"` \| `"env_wait"` \| `"schedule"` |
 | `seg_id` | string | | 归属的轨迹段；**缺省 = engine/worker 级区间** |
 | `t_start` / `t_end` | int | ✓ | 区间，`t_end ≥ t_start` |
-| `n_tokens` | int | | 本区间处理/产出的 token 数 |
+| `n_tokens` | int | | 本区间处理/产出的 token 数。**prefill/decode 的 span 应当必填（SHOULD）**——吞吐/MFU/长度分布全依赖它，缺省则 trace 不可分析；`schedule`/`env_wait` 可省略 |
 | `worker` | int | | worker（DP rank）id |
 | `meta` | object | | 如 `{"reason": "re-prefill"}` |
 
@@ -179,6 +181,7 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 |---|---|---|---|
 | `seg_id` | string | ✓ | run 内唯一 |
 | `group_id` | string | ✓ | rollout 组 id（一个 prompt 的 G 条共享） |
+| `batch_id` | string | | 引擎调度批 id（§8 兼容增量，2026-09-29 应 C 之 S1–S3 指标补）：同批在 GPU 上共存的段集合。**与 `group_id` 不同概念**——组是采样逻辑，批是调度逻辑。合成器不产出，C 过渡期按时间重叠聚类近似 |
 | `birth_version` | int | ✓ | **出生版本**：本段第一个生成 token 时的生效版本，`initial_version ≤ birth_version ≤ 当前版本` |
 | `t_start` | int | ✓ | 段开始时刻 |
 | `n_prompt_tokens` | int | ✓ | prompt 长度 |

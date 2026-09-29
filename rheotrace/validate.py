@@ -294,6 +294,8 @@ def _check(source: Source, rep: ValidationReport) -> None:
                 continue
             if ev["n_prompt_tokens"] < 0:
                 rep.add_error("E05", f"n_prompt_tokens 为负: {ev['n_prompt_tokens']}", line)
+            if not isinstance(ev.get("batch_id", ""), str):
+                rep.add_error("E05", "segment_start.batch_id 应为 str", line)
             if ev["birth_version"] < initial_version:
                 rep.add_error(
                     "E10",
