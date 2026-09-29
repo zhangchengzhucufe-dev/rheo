@@ -22,13 +22,28 @@
    - `bench/m0/merge_trace.py`（spill 合并 + 账本重放 + validate；有单测覆盖）
    - 合成 spill→merge→validate 全流程已测通（tests/test_merge_trace.py 3 个用例过）
 
-## 当前进行中（2026-09-29 17:15 起）
+## 状态（2026-09-29 18:00 更新）
 
-**正式跑 r1 已启动**：`RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=5`，
-日志 `logs/train-r1.log` + `logs/attempt-171340.log`，spill → `traces-spill/`，
-checkpoint 每 5 步 → `~/tools/rheo-checkpoints/grpo-lora-qwen25-1.5b/`。
-中断后：清理 ray 残留 + 删 gpu.lock，**重跑同一命令**即从 checkpoint 续跑。
-注意：pkill 的模式别写进启动命令里（会匹配自杀）；清理与启动分两条命令跑。
+四轮代码审查完成（共修复 13 处），**尚未开始正式跑**——等用户发话。
+启动命令（清理与启动必须分两条命令；清理命令里别写与自身命令行匹配的 pkill 模式）：
+
+```bash
+# 清理（单独一条）
+pkill -9 -f main_ppo; pkill -9 -f raylet; pkill -9 -f gcs_server
+rm -f /mnt/c/Users/15985/tools/.locks/gpu.lock
+rm -rf bench/results/m0-baseline/traces-spill   # 全新跑才清；续跑保留
+
+# 启动（单独一条）
+RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=5 \
+  ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh \
+  > bench/results/m0-baseline/logs/train-r2.log 2>&1
+```
+
+训完后：
+1. `python bench/m0/plot_reward.py`（自动选最新实验目录）
+2. `python bench/m0/merge_trace.py --spill-dir bench/results/m0-baseline/traces-spill`
+   （默认输出 `bench/traces/m0-baseline.rheotrace.jsonl`，须 validate ok=True）
+3. 摘要写 `bench/results/m0-baseline/summary.md`，连同曲线 PNG `git add -f` 推送开 PR
 
 ## 历史修复记录（迷你端到端暴露的 4 个 bug，均已修 + 推送）
 

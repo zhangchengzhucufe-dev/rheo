@@ -55,7 +55,7 @@ def main() -> None:
     ap.add_argument(
         "--out",
         type=Path,
-        default=here / ".." / "traces" / "m0-baseline.jsonl",
+        default=here / ".." / "traces" / "m0-baseline.rheotrace.jsonl",
     )
     ap.add_argument("--model", default="Qwen2.5-1.5B-Instruct")
     ap.add_argument("--n-workers", type=int, default=8)
