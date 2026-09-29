@@ -16,7 +16,10 @@ Patched sites:
   step (plain function: the original is @auto_await and fit() calls it sync)
 - SingleTurnAgentLoop.run                -> segment lifecycle + decode span +
   token_logprob chunk; the LLMServerClient.generate timing is captured via a
-  ContextVar so concurrent per-sample tasks don't stomp each other.
+  ContextVar so concurrent per-sample tasks don't stomp each other
+- AgentLoopWorker.generate_sequences     -> stash meta_info validate/global_steps
+  into a ContextVar; per-sample tasks inherit it (create_task copies context),
+  letting segment meta distinguish validation from training samples
 
 No-op (stdlib-only imports) unless RHEO_TRACE=1.
 """
