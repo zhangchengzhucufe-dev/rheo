@@ -51,11 +51,19 @@ while [ "$i" -lt "$MAX_BATCHES" ]; do
   elif command -v with-lock >/dev/null 2>&1; then WITH_LOCK_BIN="$(command -v with-lock)"
   fi
 
+  # TASK-A2 E16：检测到 checkpoint（= 崩溃续跑）时，恢复训练前立即补一次验证，
+  # 把崩溃丢失的验证点补回来；全新跑不预验证（避开争用期的长验证）
+  VAL_FLAG=false
+  if ls "$SCRATCH"/checkpoints/grpo-lora-qwen25-1.5b/global_step_* >/dev/null 2>&1; then
+    VAL_FLAG=true
+    echo "[supervisor] checkpoint found → resume WITH immediate validation"
+  fi
+
   if [ -n "$WITH_LOCK_BIN" ]; then
-    RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=10 VAL_BEFORE_TRAIN=false \
+    RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=10 VAL_BEFORE_TRAIN=$VAL_FLAG \
       "$WITH_LOCK_BIN" gpu 1800 -- bash "$REPO_DIR/bench/m0/run_grpo.sh"
   else
-    RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=10 VAL_BEFORE_TRAIN=false \
+    RHEO_TRACE=1 EXP=grpo-lora-qwen25-1.5b STEPS=40 TEST_FREQ=10 VAL_BEFORE_TRAIN=$VAL_FLAG \
       bash "$REPO_DIR/bench/m0/run_grpo.sh"
   fi
   rc=$?

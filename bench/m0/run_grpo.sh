@@ -150,20 +150,20 @@ while true; do
   fi
 
   if grep -qE "Free memory on device|CUDA out of memory|OutOfMemoryError" "$ATTEMPT_LOG"; then
-    # 降档梯子：seqs 减半 → micro 减半 → util 降 0.06（下限 0.45）
+    # 降档梯子（TASK-A2 顺序）：util ↓ → micro 减半 → seqs 减半
     # 同签名（连续 OOM）快速跳档：一次降两档
-    if [ "$SEQS" -gt 12 ]; then
-      SEQS=$((SEQS / 2))
+    if [ "$UTIL" != "0.45" ]; then
+      UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.45, $UTIL - 0.06):.2f}')")
     elif [ "$MICRO" -gt 1 ]; then
       MICRO=$((MICRO / 2))
-    elif [ "$UTIL" != "0.45" ]; then
-      UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.45, $UTIL - 0.06):.2f}')")
+    elif [ "$SEQS" -gt 12 ]; then
+      SEQS=$((SEQS / 2))
     else
       echo "[run_grpo] OOM 梯子到底仍失败；放弃（完整日志: $ATTEMPT_LOG）" >&2
       exit 1
     fi
     if [ "$LAST_SIG" = "oom" ]; then
-      if [ "$SEQS" -gt 12 ]; then SEQS=$((SEQS / 2)); elif [ "$MICRO" -gt 1 ]; then MICRO=$((MICRO / 2)); fi
+      if [ "$UTIL" != "0.45" ]; then UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.45, $UTIL - 0.06):.2f}')"); elif [ "$MICRO" -gt 1 ]; then MICRO=$((MICRO / 2)); elif [ "$SEQS" -gt 12 ]; then SEQS=$((SEQS / 2)); fi
     fi
     echo "[run_grpo] OOM → 降档至 util=$UTIL micro=$MICRO seqs=$SEQS" >&2
     LAST_SIG="oom"
