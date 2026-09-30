@@ -395,7 +395,8 @@ D2 判定（此时其 KV 可能已被 S4 降级到 host——`kv_action` 由 S4 
 已记 `docs/issues.md`（本日新增）：
 
 - **S1→S2**：spec §8 增量候选——`segment_end.trainer_committed: bool`（可选字段，向后兼容），
-  用于组级拒收（§6.5 口径 2）的精确对账；过渡期用 `run_start.meta.scheduler` 携带拒收清单。
+  用于组级拒收（§6.5 口径 2）的精确对账；过渡期由适配层发自定义事件
+  `scheduler_group_reject`（W06 前向兼容，集成测试已验证），增量合入后废弃。
 - **S1↔S4**：`env_wait → paused` 直转仍非法（§7.2）；若 S4 的分级留存需要"等待中冻结到 token 边界"
   语义，走增量讨论，不动已冻结状态机。
 
