@@ -401,7 +401,7 @@ def test_merge_reports_covered_steps(tmp_path: Path) -> None:
         check=True,
     )
     assert "covered_steps: 1-3 (2 步)" in r.stdout
-    assert "WARNING" in r.stdout and "缺 [2]" in r.stdout
+    assert "WARNING" in r.stdout and "只覆盖 2 步" in r.stdout
     events = [json.loads(line) for line in out.read_text().splitlines()]
     run_start = next(e for e in events if e["type"] == "run_start")
     assert run_start["meta"]["covered_steps"] == [1, 3]

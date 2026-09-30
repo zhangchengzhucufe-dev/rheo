@@ -82,14 +82,16 @@ def main() -> None:
     run_id = run_ids.pop() if run_ids else "r-m0baseline"
 
     # 覆盖步数注记：weight_sync 的 trainer_step 集合（热身同步记 0，不计入）
-    covered = sorted({int(e["trainer_step"]) for e in raw if e["type"] == "weight_sync"} - {0})
+    covered = sorted(
+        {int(e.get("trainer_step", 0)) for e in raw if e["type"] == "weight_sync"} - {0}
+    )
     if args.expected_steps:
-        expected = set(range(1, args.expected_steps + 1))
-        missing = sorted(expected - set(covered))
-        if missing:
+        # 实测 verl 的步末同步带自增后的编号（2 步跑同步出现在 2,3），
+        # 所以按「数量 + 最大步 ≥ 预期」判定，不做 1..N 的精确集合比对
+        if len(covered) < args.expected_steps or (covered and max(covered) < args.expected_steps):
             print(
-                f"WARNING: covered_steps 缺口：缺 {missing[:10]}"
-                f"{'...' if len(missing) > 10 else ''}（{len(missing)} 步无 weight_sync 事件）"
+                f"WARNING: weight_sync 只覆盖 {len(covered)} 步"
+                f"（steps={covered}，预期 {args.expected_steps} 步）——存在缺口，曲线可能缺验证点"
             )
     lo = covered[0] if covered else 0
     hi = covered[-1] if covered else 0

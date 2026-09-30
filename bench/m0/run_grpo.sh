@@ -81,7 +81,8 @@ while true; do
   ATTEMPT=$((ATTEMPT + 1))
   ATTEMPT_LOG="$LOG_DIR/attempt-${RUN_ID}-$(printf %03d "$ATTEMPT").log"
   # TASK-A2 F21：attempt 日志轮转，只留最近 10 份
-  ls -t "$LOG_DIR"/attempt-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f
+  # 轮转：只留最近 10 份（|| true 防 set -e 在首次无匹配时杀死脚本）
+  ls -t "$LOG_DIR"/attempt-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 
   {
     # TASK-A2 G7：最终生效参数回显，永远在日志首行
