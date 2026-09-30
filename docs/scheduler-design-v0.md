@@ -341,6 +341,8 @@ def decide_resume(seg, obs) -> Decision:  # D2 安全点之后逐段调用（仅
 
 注：`weight_skip`（§6.4）是**组级**判定——"整组不值得在新版本上重算"，由带成本意识的策略
 产生（v1 默认策略不产生）；段级"到长"是引擎的 finish 通道，不走 abort。
+实现注记：到长段进入本判定序属于调用方契约违反，`decide_resume` 以 `SchedulerError` 拒绝
+（而非伪码中的良性跳过——伪码表达语义，代码强制前置）。
 
 真值简化注记：④"重算成本 < 剩余价值"在 v1 恒真的理由——0.5B 档 re-prefill 单段开销
 （毫秒级 prefill）远小于该段剩余 decode 价值；带阈值的判定留给仿真器先扫（S2 有 `prefill_len`
