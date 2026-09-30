@@ -4,7 +4,7 @@ Loaded via a ``sitecustomize.py`` bootstrap in ~/tools/venvs/rheo whenever
 ``RHEO_TRACE=1``, ``RHEO_TRACE_HOOKS`` points at this file, and argv[0] is not
 a ``-c`` one-shot. Every ray worker process gets the monkey patches below;
 events are appended to per-process spill files
-(``$RHEO_TRACE_DIR/spill-<pid>.jsonl``) with wall-clock ns timestamps, then
+(``$RHEO_TRACE_DIR/<run_id>/spill-<pid>.jsonl``) with wall-clock ns timestamps, then
 merged into a single RheoTrace file by ``bench/m0/merge_trace.py`` (spec §3
 sanctions per-worker files; the merger replays the weight_sync ledger to
 derive per-segment birth/end_version).
