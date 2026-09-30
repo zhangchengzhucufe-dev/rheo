@@ -194,3 +194,28 @@ rheo/
 ## 8. 关键参考
 
 AReaL / AsyncFlow / Echo / StreamRL / OrchestrRL / DORA / verl(HybridFlow) / System-Aware Self-Speculative Decoding for RL Rollouts / DAPO / SGLang RadixAttention / vLLM PagedAttention / EAGLE-3 / LMCache / Mooncake
+
+---
+
+## 9. 硬件与预算事实（2026-09-30 实测修正，优先级高于本文早期假设）
+
+M0 实测（详见 `bench/results/m0-baseline/env.md`）：
+
+- 实机为 RTX 3060 Laptop **6GB**（非迭代 8 假设的 12GB）；WSL2 下 Windows 桌面常驻占 1–2.5GB，训练实际可用 **3.5–4.5GB**。
+- 已验证：Qwen2.5-1.5B + LoRA + GRPO + vLLM 0.12 在此卡上可完整跑通（M0 达成）。
+
+对后续里程碑的修正：
+
+- **默认实验规模改为 0.5B**（1.5B 为可选档）：调度器、仿真器、工作负载的全部"相对结论"（加速比、停顿占比、长尾行为）在 0.5B 上成立；绝对吞吐数字一律标注模型规模。
+- **M3 双缓冲**：fp16 双份权重 0.5B≈2GB 本地可行；1.5B≈6GB 仅权重，本地不可行——1.5B/7B 的双缓冲与热切换验证上云单卡 A100/A800 80GB。
+- **M4 影子副本**（CPU pinned 精确副本）不受影响；HBM 低精度副本按 0.5B 预算。
+
+云爆发预算（2026-09 国内行情，AutoDL/恒源云/矩池云等，支付宝直付）：
+
+| 用途 | 卡型 | 价格 |
+|---|---|---|
+| 中间规模实验（3B 级） | 单卡 4090 24GB | ¥1.3–2.5/卡时 |
+| 1.5B 双缓冲、7B LoRA 对照 | 单卡 A100/A800 80GB | ¥5–10/卡时 |
+| 里程碑发布数字（需 NVLink 可比性） | 8×A800 NVLink 整机 | ¥60–100/时；6–12h 聚焦实验 ≈ **¥400–1200/次** |
+
+原则：大规模结论先在 `sim/` 仿真器跑（零租金），真机只做点验证；8 卡机选 A800/H800（A100 国内特供等效，NVLink 在、数字可比，H20 已停产勿选）；云端模型权重即用即弃，只拉回 trace/checkpoint/结果。

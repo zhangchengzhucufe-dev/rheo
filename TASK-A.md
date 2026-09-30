@@ -48,3 +48,13 @@
 - 分支生命周期 ≤ 1 周，验收达标即 merge 回 main；勤 rebase main
 - 不启动 M2 的东西：kernels/ 实现、scheduler、WeightManager、sim/
 - 别人板块的坑 → `docs/issues.md`，不顺手改
+
+---
+
+## 第二阶段交接（2026-09-30 加，本文件其余部分为阶段 1 存档）
+
+正式跑收尾（RESUME 步骤 5–7：plot_reward → merge_trace（必须 validate ok=True）→ summary.md）完成后：
+
+1. push 分支开 PR 合入 main；有冲突就 rebase main（main 已前进：B/C 的工作都在里面）
+2. 合入后通读 **TASK-S1.md**——调度器的 verl 集成需要你积累的插桩知识（hooks 模式、3 个补丁、RESUME.md）。若 S1 由新会话接任，把 `bench/m0/RESUME.md` 和 `env.md` 留给对方作为必读
+3. 你的会话即可功成身退，或转去帮 S1 做 verl 集成（读 TASK-S1.md 任务 3）
