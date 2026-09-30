@@ -27,10 +27,14 @@ Action = Literal["continue", "pause", "re-prefill", "abort"]
 #: abort reason 注册表（设计 §6.4；落 segment_end.reason，对齐 rheotrace-spec E15）
 ABORT_REASONS: tuple[str, ...] = ("zero_variance_early", "weight_skip", "policy_preempt")
 
-SegState = Literal["running", "paused", "env_wait", "finished", "aborted"]
+#: 调度核心的段生命周期（trace 状态 + 私有初态 queued；SegmentView.state 只暴露 trace 子集）
+SegState = Literal["queued", "running", "paused", "env_wait", "finished", "aborted"]
 
-#: 段状态机（rheotrace-spec §2 表的运行时镜像；终态转换只经 finish/abort 通道）
+#: 段状态机（rheotrace-spec §2 表的运行时镜像 + 调度核心私有的 queued 初态）。
+#: queued = 已登记未派发：trace 上尚无存在（segment_start 未发），不进 Observation.segments；
+#: 派发（plan_batch）转 running，组 abort 直接转 aborted（零 token、无 trace 事件）。
 _SEG_TRANSITIONS: dict[str, frozenset[str]] = {
+    "queued": frozenset({"running", "aborted"}),
     "running": frozenset({"paused", "env_wait", "finished", "aborted"}),
     "paused": frozenset({"running", "aborted"}),
     "env_wait": frozenset({"running", "aborted"}),
@@ -69,6 +73,7 @@ class SegmentView:
 class GroupView:
     group_id: str
     n_total: int
+    n_queued: int  # 已登记未派发（调度核心私有初态，trace 上无存在）
     n_running: int
     n_paused: int
     n_env_wait: int
@@ -295,7 +300,7 @@ class _SegState:
     n_prompt_tokens: int
     max_new_tokens: int | None
     birth_version: int
-    state: SegState = "running"
+    state: SegState = "queued"  # 初态：已登记未派发（trace 上无存在）
     n_gen_tokens: int = 0
     batch_id: str | None = None
     current_version: int = -1  # -1 = 未初始化，注册时置为 birth_version
@@ -424,7 +429,8 @@ class Scheduler:
         group.rewards[seg_id] = reward
         if len(group.rewards) == len(group.seg_ids):
             values = list(group.rewards.values())
-            if min(values) == max(values):
+            # 方差需要 ≥2 个样本：G=1 组退化（方差无定义），不判拒收，由训练侧过滤
+            if len(values) >= 2 and min(values) == max(values):
                 group.rejected = True
                 return self.group_view(group_id)
         return None
@@ -432,12 +438,18 @@ class Scheduler:
     # -- D1：批组装（§5.2） ---------------------------------------------------
 
     def plan_batch(
-        self, candidate_group_ids: Sequence[str], kv_free_tokens: int
+        self,
+        candidate_group_ids: Sequence[str],
+        kv_free_tokens: int,
+        *,
+        birth_version: int | None = None,
     ) -> BatchPlan | None:
-        """整组共批：FIFO 装配完整组，超预算减 k 不拆组（§5.2 冻结规则）。
+        """整组共批：FIFO 装配完整组，超预算减 k 截断（§5.2 冻结规则）。
 
-        容量估算 = Σ_seg E[max_new_tokens]（设计 §5.2 口径；prompt 占用另计，
-        这里只按生成 token 推）。连一个组都放不下时返回 None（本波不派）。
+        birth_version：派发时刻的生效版本——排队段登记于 submit，派发可能在 weight_sync
+        之后，出生版本以派发时为准（引擎据此回填 segment_start.birth_version）。
+        容量估算 = Σ_seg E[max_new_tokens]（§5.2 口径；prompt 占用另计）。
+        连一个组都放不下时返回 None（本波不派）。
         """
         picked: list[str] = []
         seg_ids: list[str] = []
@@ -449,7 +461,7 @@ class Scheduler:
             pending = [
                 self._segs[s]
                 for s in group.seg_ids
-                if self._segs[s].batch_id is None and self._segs[s].state == "running"
+                if self._segs[s].batch_id is None and self._segs[s].state == "queued"
             ]
             if len(pending) != len(group.seg_ids):
                 continue  # 组已（部分）派发或不在批装状态，跳过
@@ -468,7 +480,12 @@ class Scheduler:
             return None
         batch_id = f"b-{next(self._batch_seq)}"
         for seg_id in seg_ids:
-            self._segs[seg_id].batch_id = batch_id
+            seg = self._segs[seg_id]
+            seg.batch_id = batch_id
+            seg.state = "running"  # 派发即上批：queued → running
+            if birth_version is not None:
+                seg.birth_version = birth_version
+                seg.current_version = birth_version
         return BatchPlan(
             batch_id=batch_id, group_ids=tuple(picked), seg_ids=tuple(seg_ids), est_kv_tokens=est
         )
@@ -524,7 +541,7 @@ class Scheduler:
         group = self._groups[decision.group_id]
         for seg_id in group.seg_ids:
             seg = self._seg(seg_id)
-            if seg.state in _INFLIGHT:
+            if seg.state not in ("finished", "aborted"):  # 在途 + 排队都中止（排队段零 token）
                 self.set_state(seg_id, "aborted")
                 self._aborted_tokens += seg.n_gen_tokens
                 self._aborted_by_reason[decision.reason] = (
@@ -535,15 +552,23 @@ class Scheduler:
 
     def group_view(self, group_id: str) -> GroupView:
         group = self._groups[group_id]
-        counts = {"running": 0, "paused": 0, "env_wait": 0, "finished": 0, "aborted": 0}
+        counts: dict[str, int] = {
+            "queued": 0,
+            "running": 0,
+            "paused": 0,
+            "env_wait": 0,
+            "finished": 0,
+            "aborted": 0,
+        }
         dispatched = False
         for seg_id in group.seg_ids:
-            seg = self._segs[seg_id]
+            seg = self._seg(seg_id)
             counts[seg.state] += 1
             dispatched = dispatched or seg.batch_id is not None
         return GroupView(
             group_id=group_id,
             n_total=len(group.seg_ids),
+            n_queued=counts["queued"],
             n_running=counts["running"],
             n_paused=counts["paused"],
             n_env_wait=counts["env_wait"],

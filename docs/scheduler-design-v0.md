@@ -97,6 +97,7 @@ class SegmentView:
 class GroupView:
     group_id: str
     n_total: int  # G
+    n_queued: int  # 已登记未派发（调度核心私有初态：trace 上无存在，不进 Observation.segments）
     n_running: int
     n_paused: int
     n_env_wait: int
@@ -180,6 +181,11 @@ GRPO/DAPO 的优势在组内归一化，组是数据有效性单位：组内成�
   （返回 `continue` 即"本波不派"），显式错峰策略由 S2 在 harness 里实现，引擎不内置；
 - 容量约束：k 的上限由 KV 预算推得——`Σ_group (G × E[max_new_tokens])` 不超过当前可用 KV 池
   （预算表见 §9）；超限则减 k，不拆组；
+- **queued 初态**：submit 时组内段登记为 `queued`（已登记未派发；trace 上无存在——`segment_start`
+  未发，故不进 `Observation.segments`），派发（进批）才转 `running`，并以**派发时刻的生效版本**
+  盖 `birth_version`（排队段可能在 weight_sync 之后才派发；引擎据此回填 `segment_start.birth_version`）。
+  安全点 pause 与 re-prefill 均不触及 queued 段；组 abort 覆盖 queued 段（零 token 记账，不产生
+  trace 事件），已 abort 的组不再入批（防僵尸派发）；
 - 同组内所有段写入同一 `batch_id`；`batch_id` 由调度器生成（`b-<run 内序号>`），经
   `segment_start.batch_id`（spec v0.1.1 已就位）落 trace，A 插桩从调度器取值回填。
 
@@ -213,7 +219,7 @@ scheduler.report_reward(group_id: str, seg_id: str, reward: float) -> None
 
 | 检测 | 触发条件 | 动作 | 误伤面 |
 |---|---|---|---|
-| **exact**（默认开） | 组内全部 G 段 finished 且 `variance == 0` | 组内已无在途段，无 abort 收益；**标记组数据拒收**（§6.5），对账用 | 无 |
+| **exact**（默认开） | 组内全部 G 段 finished 且奖励数 ≥ 2 且 `variance == 0`（G=1 组方差无定义，不判拒收，由训练侧过滤） | 组内已无在途段，无 abort 收益；**标记组数据拒收**（§6.5），对账用 | 无 |
 | **early**（默认关，A/B 开） | 奖励可得数 ≥ `max(2, ceil(ρ·G))` 且已得奖励全等（奖励可得可能滞后于完成数——reward model 延迟——按可得数保守计） | `abort(group, reason="zero_variance_early")`，在途成员立即中止 | 在途成员本可能产出不同奖励 → 白白损失有效组；ρ 越小误伤越大 |
 
 early 的默认关闭是刻意保守：v1 先用 exact 验证对账链路（abort 语义、trace、废 token 统计），
@@ -237,8 +243,10 @@ A/B 实验里再开 early 测真实收益/误伤曲线。ρ 进配置，扫描�
 1. **段级**：`segment_end{state:"aborted", reason, n_gen_tokens}` → 段级废 token（metrics 铁律 3）；
 2. **组级拒收**（exact 检测 + 组内全部 finished 但数据被弃）：这是 C 在 `docs/issues.md` 已指出的
    spec 缺口（finished 段的 `trainer_committed` 不可区分）——**不实现绕路，走 spec §8 增量**：
-   已在 issues.md 记 S1→S2 条目（见 §11），增量落地前，本设计以
-   `run_start.meta.scheduler = {"dapo_exact_rejected_groups": [...]}` 携带组级拒收清单作过渡对账；
+   已在 issues.md 记 S1→S2 条目（见 §11）。增量落地前，适配层以**自定义事件**
+   `scheduler_group_reject{ts, group_id, reason:"zero_variance", meta:{n_gen_tokens_group}}` 过渡
+   （spec §8 允许 schema_version 0 内新增事件类型：旧 reader 跳过并报 W06，validator strict 照常通过；
+   集成测试已验证该兼容路径）。`trainer_committed` 增量合入后废弃；
 3. **聚合**：`bench/analysis` 现有 waste 口径不变；A/B 报告给
    `waste = aborted_tokens / generated_tokens` 及含/不含 abort 双列（口径已在 metrics-v0 冻结，不新增）。
 
@@ -300,6 +308,7 @@ class ResumePlan:
 | `resume(receipt, "re-prefill")` | `segment_state{paused→running}` + `phase_span{prefill, meta:{reason:"re-prefill"}, n_tokens=prefill_len}` |
 | `resume(receipt, "shadow"/"stale")` | `segment_state{paused→running}` + 段内新 logprob 块 `version=target_version` + `segment_end.finish_mode` 相应标注（M3/M4 兑现） |
 | `abort`（D2/D3 任一路径） | 每段 `segment_end{state:"aborted", reason, n_gen_tokens, end_version}` |
+| 组级拒收（exact，§6.5 口径 2） | 自定义事件 `scheduler_group_reject{ts, group_id, reason:"zero_variance", meta}`（W06 前向兼容，`trainer_committed` 增量后废弃） |
 
 ## 8. 成本模型：四分支判定输入表（输入冻结；v1 只激活两支）
 

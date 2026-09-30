@@ -56,6 +56,7 @@ def make_group(n_total=4, n_finished=0, rewards=(), dispatched=False) -> GroupVi
     return GroupView(
         group_id="g1",
         n_total=n_total,
+        n_queued=0,
         n_running=n_total - n_finished,
         n_paused=0,
         n_env_wait=0,
@@ -275,8 +276,18 @@ class TestZeroVariance:
     def test_early_requires_reward_data(self):
         assert not early_abort_candidate(make_group(n_finished=4, rewards=()), 0.5)
 
+    def test_exact_requires_at_least_two_rewards(self):
+        # G=1 组退化：方差无定义，不判拒收（由训练侧过滤）
+        sch = fresh_scheduler(group_size=1, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        sch.advance("g0-s0", 5)
+        sch.finish("g0-s0")
+        sch.report_reward("g0", "g0-s0", 1.0)
+        assert sch.waste_report()["rejected_groups"] == []
+
     def test_exact_rejection_marks_group(self):
         sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         for s in ("g0-s0", "g0-s1"):
             sch.finish(s)
         sch.report_reward("g0", "g0-s0", 1.0)
@@ -287,6 +298,7 @@ class TestZeroVariance:
 
     def test_exact_no_rejection_when_variance_nonzero(self):
         sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         for s in ("g0-s0", "g0-s1"):
             sch.finish(s)
         sch.report_reward("g0", "g0-s0", 1.0)
@@ -295,6 +307,7 @@ class TestZeroVariance:
 
     def test_report_reward_validations(self):
         sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         with pytest.raises(SchedulerError, match="不存在"):
             sch.report_reward("nope", "g0-s0", 1.0)
         with pytest.raises(SchedulerError, match="不属于"):
@@ -392,6 +405,9 @@ class TestStateMachineAndWaste:
         sch = fresh_scheduler(group_size=1, n_groups=1)
         with pytest.raises(SchedulerError, match="未知段"):
             sch.advance("nope", 1)  # 未知段
+        with pytest.raises(SchedulerError, match="只有 running 段"):
+            sch.advance("g0-s0", 1)  # queued（已登记未派发）不可推进
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         sch.set_state("g0-s0", "paused")
         with pytest.raises(SchedulerError, match="只有 running 段"):
             sch.advance("g0-s0", 1)
@@ -402,14 +418,57 @@ class TestStateMachineAndWaste:
             sch.advance("g0-s0", 1)
         assert sch._segs["g0-s0"].n_gen_tokens == 5
 
+    def test_queued_state_lifecycle(self):
+        # queued 初态：登记≠上 GPU；派发才转 running（§5.2）
+        sch = fresh_scheduler(group_size=1, n_groups=1)
+        assert sch.group_view("g0").n_queued == 1
+        assert sch.observation(0, 0, 10**9).segments == ()  # queued 段不进观察
+        with pytest.raises(SchedulerError, match="非法状态转换"):
+            sch.set_state("g0-s0", "paused")  # queued → paused 直转非法（须先派发）
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        assert sch.group_view("g0").n_queued == 0
+        assert sch.group_view("g0").n_running == 1
+        assert sch.observation(0, 0, 10**9).segments != ()
+
+    def test_plan_batch_stamps_birth_version_at_dispatch(self):
+        # 排队段跨 weight_sync 派发：出生版本以派发时为准（≠登记时的版本）
+        sch = Scheduler()
+        sch.register_group("g0", ["g0-s0"])
+        sch.register_segment("g0-s0", "g0", n_prompt_tokens=10, max_new_tokens=100, birth_version=0)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9, birth_version=3)
+        seg = sch._segs["g0-s0"]
+        assert seg.birth_version == 3 and seg.current_version == 3
+
+    def test_abort_covers_queued_and_blocks_redispatch(self):
+        # 组 abort 覆盖排队段（零 token），且该组不再入批（防僵尸派发）
+        sch = Scheduler()
+        sch.register_group("g0", ["g0-s0", "g0-s1"])
+        for s in ("g0-s0", "g0-s1"):
+            sch.register_segment(s, "g0", n_prompt_tokens=10, max_new_tokens=100)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)  # 两段都派发 → running
+        sch.advance("g0-s0", 7)
+        sch.apply(Decision("abort", group_id="g0", reason="weight_skip"))
+        assert sch.group_view("g0").n_aborted == 2
+        assert sch.waste_report()["aborted_tokens"] == 7
+        assert sch.plan_batch(["g0"], kv_free_tokens=10**9) is None  # 不复活
+
+    def test_queued_group_not_in_observation_until_dispatch(self):
+        # 未派发组不出现在 obs.groups（无在途段）；派发后出现
+        sch = fresh_scheduler(group_size=2, n_groups=1)
+        assert sch.observation(0, 0, 10**9).groups == ()
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        assert len(sch.observation(0, 0, 10**9).groups) == 1
+
     def test_illegal_transition_rejected(self):
         sch = fresh_scheduler(group_size=1, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         sch.set_state("g0-s0", "env_wait")
         with pytest.raises(SchedulerError, match="非法状态转换"):
             sch.set_state("g0-s0", "paused")  # env_wait → paused 直转非法（§7.2）
 
     def test_terminal_state_is_final(self):
         sch = fresh_scheduler(group_size=1, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         sch.finish("g0-s0")
         with pytest.raises(SchedulerError, match="非法状态转换"):
             sch.set_state("g0-s0", "running")
@@ -430,6 +489,7 @@ class TestStateMachineAndWaste:
 
     def test_abort_skips_terminal_segments(self):
         sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         sch.advance("g0-s0", 10)
         sch.finish("g0-s0")
         sch.apply(Decision("abort", group_id="g0", reason="weight_skip"))
@@ -475,6 +535,7 @@ class TestOnSync:
         sch.register_group("g0", segs)
         for s in segs:
             sch.register_segment(s, "g0", n_prompt_tokens=10, max_new_tokens=100)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         sch.set_state("g0-s0", "paused")
         sch.set_state("g0-s1", "paused")
         sch._groups["g0"].rejected = True  # exact 拒收后残留 paused 段（防御路径）
@@ -536,6 +597,7 @@ class TestV1PolicyLoop:
     def test_fully_terminal_group_not_in_observation(self):
         # 组全员终态后不再出现在 obs.groups（§4.2"未收尾组"），策略对其返回 continue
         sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
         for s in ("g0-s0", "g0-s1"):
             sch.advance(s, 5)
             sch.finish(s)
