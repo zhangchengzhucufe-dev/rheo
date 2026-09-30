@@ -44,6 +44,41 @@
 结论：管线、插桩、防崩溃体系平台无关且已全部实测；WSL 仅适合短跑，
 长跑用云端/原生 Linux（与 PLAN.md §8 的"3060 起步 + 云爆发"路线一致）。
 
+## 指标 × 语义对照表（TASK-A2 G5 审计）
+
+| 指标 | 语义 | 可信度 |
+|---|---|---|
+| `val-core/gsm8k/acc/mean@1` | 验证集规则判分准确率——**正确的核心口径** | ✓ 用这个 |
+| `val-aux/gsm8k/reward/mean@1` | 恒 ≡2.0：单轮 AgentLoop 输出 num_turns=2，reward 序列按轮聚合的派生量（2×1.0），**不是准确率** | ✗ 忽略 |
+| `train: critic/score/mean` 与 `critic/rewards/mean` | 数值恒等（rule reward 无 KL 修正），取一即可 | ✓ |
+| `response_length/max` 恒贴 512 上限 | 采样偶尔触顶被截断，clip_ratio 才是正常性指标 | ✓ 有界正常 |
+
+一句话结论（G5）：`val-aux/gsm8k/reward/mean@1≡2.0` 是 verl 验证指标聚合把 num_turns=2
+的单轮输出按轮重复计入的派生量，与模型能力无关；分析一律以 `val-core/.../acc` 为准，
+不动 verl 源码。
+
+## TASK-A2 收尾加固（复盘 G1-G7）
+
+针对云端 40 步跑复盘发现的两处交付硬伤（trace 只覆盖 30-40 步、验证点缺一），
+管线加固已全部落地（详见 bench/m0/CLOUD_GUIDE.md 避坑表）：
+
+- **G1/D14**：spill 按 run_id 分子目录，续跑只续写；merge 按 run_id 合并（混入历史 run 直接拒绝）
+  + `covered_steps` 覆盖率注记（缺步 WARNING），单测覆盖
+- **D12/D13**：checkpoint `max_ckpt_to_keep=2`；scratch 盘统一变量；supervisor df 预检
+  （<20GB 显式报 ENOSPC 并停）。注：verl 0.8 无"只存 LoRA 适配器"的 save_contents
+  选项且断点续跑必须全量状态——适配器只存留待 S6 的 verl PR 素材
+- **E15/C11**：失败三分类（配置/路径类立即终止并高亮根因；OOM 走 seqs 减半→micro 减半→
+  util 降档梯子；瞬态同档重试）
+- **G7**：attempt 日志首行回显全部生效参数
+- **可移植性**：脚本零私人路径（REPO_DIR 从脚本位置推导）、PYTHON 默认取 PATH、
+  sitecustomize 经 PYTHONPATH 零拷贝
+- **G6**：supervisor 成功出口可挂 `AUTO_SHUTDOWN=1` 自动关机；E18：PID 文件管理 +
+  stop_supervisor.sh；F21：attempt 日志轮转
+- **A2/A3/F19**：doctor.sh 预检（import 冒烟 + 版本矩阵 + 路径/磁盘）+ huggingface-hub 钉版
+- 先导 trace（16 步）改名 `bench/traces/m0-baseline-pilot.rheotrace.jsonl` 保留
+
+**完整重跑（40 步、单配置无拼接、4 验证点）按 CLOUD_GUIDE.md 在云端执行。**
+
 ## 验收对照（TASK-A）
 
 - [x] venv 可复现（env.md 版本表 + setup 命令）
