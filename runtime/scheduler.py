@@ -181,6 +181,14 @@ class SchedulerConfig:
     #: max_new_tokens 未知的段的 KV 估算用默认值（§5.2 容量推算）
     default_max_new_tokens: int = 1024
 
+    def __post_init__(self) -> None:
+        if self.early_abort_rho is not None and not 0 < self.early_abort_rho <= 1:
+            raise SchedulerError(
+                f"early_abort_rho 须 ∈ (0, 1] 或 None，得到 {self.early_abort_rho!r}"
+            )
+        if self.default_max_new_tokens <= 0:
+            raise SchedulerError("default_max_new_tokens 须为正整数")
+
 
 def decide_resume(
     seg: SegmentView,
@@ -188,7 +196,7 @@ def decide_resume(
     group_rejected: bool,
     cfg: SchedulerConfig | None = None,
 ) -> Decision:
-    """§8.2 v1 判定序：paused/env_wait 段在版本边界后的续跑决策。
+    """§8.2 v1 判定序：paused 段（安全点后）或 env_wait 段（工具唤醒时刻，§8.3）的续跑决策。
 
     输入即 §8.1 re-prefill 分支的冻结判定输入；shadow/ε-stale 分支在本函数中
     显式留位——激活位开着也抛错（本体不存在，诚实地不可用）。
@@ -201,8 +209,9 @@ def decide_resume(
     if seg.current_version == current_version:
         return Decision("continue", targets=(seg.seg_id,))
     if seg.max_new_tokens is not None and seg.n_gen_tokens >= seg.max_new_tokens:
-        # 防御路径：到长未收尾（正常应由引擎 finish），不值得为其重算
-        return Decision("abort", group_id=seg.group_id, reason="weight_skip")
+        # 契约前置：到长段由引擎 finish 收尾（max_len 完成），不进入续跑判定；
+        # Decision 的 abort 只有组级，段级提前终止不经过调度器（§8.2 注）
+        raise SchedulerError(f"段 {seg.seg_id!r} 已到 max_new_tokens，应由引擎 finish，不进入判定")
     return Decision("re-prefill", targets=(seg.seg_id,))
 
 
@@ -271,9 +280,9 @@ def validate_decision(obs: Observation, decision: Decision) -> None:
             seg = by_id.get(seg_id)
             if seg is None:
                 raise SchedulerError(f"re-prefill 目标段 {seg_id!r} 不在途")
-            if seg.state != "paused":
+            if seg.state not in ("paused", "env_wait"):
                 raise SchedulerError(
-                    f"re-prefill 目标段 {seg_id!r} 状态为 {seg.state}，须为 paused"
+                    f"re-prefill 目标段 {seg_id!r} 状态为 {seg.state}，须为 paused 或 env_wait"
                 )
     else:
         raise SchedulerError(f"未知 action：{decision.action!r}")
@@ -341,6 +350,8 @@ class Scheduler:
             raise SchedulerError(f"组重复登记：{group_id!r}")
         if not seg_ids:
             raise SchedulerError(f"组 {group_id!r} 至少要有一个段")
+        if len(set(seg_ids)) != len(seg_ids):
+            raise SchedulerError(f"组 {group_id!r} 的成员清单含重复段 id")
         self._groups[group_id] = _GroupState(group_id=group_id, seg_ids=list(seg_ids))
 
     def register_segment(
@@ -358,6 +369,8 @@ class Scheduler:
             raise SchedulerError(f"段 {seg_id!r} 的组 {group_id!r} 未登记")
         if seg_id not in group.seg_ids:
             raise SchedulerError(f"段 {seg_id!r} 不在组 {group_id!r} 的成员清单里")
+        if birth_version < 0:
+            raise SchedulerError(f"段 {seg_id!r} 的 birth_version 不得为负")
         self._segs[seg_id] = _SegState(
             seg_id=seg_id,
             group_id=group_id,
@@ -368,8 +381,14 @@ class Scheduler:
 
     # -- 状态推进（适配层从引擎回调里驱动） ---------------------------------
 
+    def _seg(self, seg_id: str) -> _SegState:
+        seg = self._segs.get(seg_id)
+        if seg is None:
+            raise SchedulerError(f"未知段：{seg_id!r}")
+        return seg
+
     def set_state(self, seg_id: str, state: SegState) -> None:
-        seg = self._segs[seg_id]
+        seg = self._seg(seg_id)
         if state not in _SEG_TRANSITIONS.get(seg.state, frozenset()):
             raise SchedulerError(f"非法状态转换 {seg.seg_id}: {seg.state} → {state}")
         seg.state = state
@@ -377,7 +396,12 @@ class Scheduler:
     def advance(self, seg_id: str, n_tokens: int = 1) -> None:
         if n_tokens < 0:
             raise SchedulerError("n_tokens 不得为负")
-        self._segs[seg_id].n_gen_tokens += n_tokens
+        seg = self._seg(seg_id)
+        if seg.state != "running":
+            # 非 running 段不存在生成推进；放行会让 n_gen_tokens 与 trace 失真，
+            # 污染废 token 对账（§6.5）
+            raise SchedulerError(f"段 {seg_id!r} 状态为 {seg.state}，只有 running 段可推进 token")
+        seg.n_gen_tokens += n_tokens
 
     def finish(self, seg_id: str) -> None:
         self.set_state(seg_id, "finished")
@@ -395,7 +419,7 @@ class Scheduler:
             raise SchedulerError(f"段 {seg_id!r} 不属于组 {group_id!r}")
         if seg_id in group.rewards:
             raise SchedulerError(f"段 {seg_id!r} 重复回填奖励")
-        if self._segs[seg_id].state != "finished":
+        if self._seg(seg_id).state != "finished":
             raise SchedulerError(f"段 {seg_id!r} 未 finished，不能回填奖励")
         group.rewards[seg_id] = reward
         if len(group.rewards) == len(group.seg_ids):
@@ -436,7 +460,7 @@ class Scheduler:
                 for s in pending
             )
             if est + group_est > kv_free_tokens:
-                continue  # 超预算：减 k 不拆组（§5.2），尝试更小的后续组
+                break  # 超预算：减 k 截断，不拆组（§5.2）；FIFO 队头公平，防止大组被小组饿死
             picked.append(group_id)
             seg_ids.extend(s.seg_id for s in pending)
             est += group_est
@@ -452,14 +476,15 @@ class Scheduler:
     # -- D2/D3：决策产生与应用 ------------------------------------------------
 
     def on_sync(self, current_version: int) -> list[Decision]:
-        """weight_sync 安全点后的逐段续跑决策（§8.2 判定序）。
+        """weight_sync 安全点后的逐段续跑决策（§8.2 判定序，仅 paused 段）。
 
-        前置：适配层已把全部 running 段置 paused（D2 强制安全点）。env_wait 段
-        跨版本同样进入判定（其 KV 在 v1 恒失效，§8.3）。
+        前置：适配层已把全部 running 段置 paused（D2 强制安全点）。
+        env_wait 段不在此判定——§8.3：其续跑决策在工具唤醒、回到 running 后
+        由适配层调 decide_resume；但组级 abort（§6）覆盖它们（apply 对全体在途段生效）。
         """
         decisions: list[Decision] = []
         for seg in self._segs.values():
-            if seg.state not in ("paused", "env_wait"):
+            if seg.state != "paused":
                 continue
             group = self._groups[seg.group_id]
             d = decide_resume(seg.view(), current_version, group.rejected, self.cfg)
@@ -491,13 +516,14 @@ class Scheduler:
             for seg_id in decision.targets:
                 self.set_state(seg_id, "running")
                 if current_version is not None:
-                    self._segs[seg_id].current_version = current_version
+                    self._seg(seg_id).current_version = current_version
             return
-        # abort：组级
-        assert decision.group_id is not None and decision.reason is not None
+        # abort：组级（组级 abort 的载荷校验在此重复防线，适配层可能绕过 validate_decision）
+        if not decision.group_id or decision.reason not in ABORT_REASONS:
+            raise SchedulerError("abort 决策载荷非法：须携带 group_id 且 reason 在注册表内")
         group = self._groups[decision.group_id]
         for seg_id in group.seg_ids:
-            seg = self._segs[seg_id]
+            seg = self._seg(seg_id)
             if seg.state in _INFLIGHT:
                 self.set_state(seg_id, "aborted")
                 self._aborted_tokens += seg.n_gen_tokens

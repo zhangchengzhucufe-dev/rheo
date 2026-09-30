@@ -145,7 +145,8 @@ class Decision:
 约束（引擎校验，违反即错误）：
 
 - `abort.reason` 必须 ∈ §6.4 的 reason 注册表（对齐 spec E15：aborted 必带 reason）。
-- `re-prefill` 的 targets 必须处于 `paused`；`pause` 的 targets 必须处于 `running`。
+- `re-prefill` 的 targets 必须处于 `paused`（安全点后续跑）**或 `env_wait`**（工具唤醒时发现
+  跨版本，§8.3：唤醒即重算，无需 paused 中转）；`pause` 的 targets 必须处于 `running`。
 - `abort` 只作用于未收尾组；组内已 finished 段不受影响（其数据去留见 §6.5）。
 - D2 上下文（`pending_sync=True`）下，只要仍有 running 段，policy 就不得返回 `continue`——
   安全点是强制的；全体在途段已到界（running 集为空）后，`continue` 合法且表示"放行指针翻转"。
@@ -213,7 +214,7 @@ scheduler.report_reward(group_id: str, seg_id: str, reward: float) -> None
 | 检测 | 触发条件 | 动作 | 误伤面 |
 |---|---|---|---|
 | **exact**（默认开） | 组内全部 G 段 finished 且 `variance == 0` | 组内已无在途段，无 abort 收益；**标记组数据拒收**（§6.5），对账用 | 无 |
-| **early**（默认关，A/B 开） | 已完成数 `n_finished ≥ max(2, ceil(ρ·G))` 且已完成奖励全等 | `abort(group, reason="zero_variance_early")`，在途成员立即中止 | 在途成员本可能产出不同奖励 → 白白损失有效组；ρ 越小误伤越大 |
+| **early**（默认关，A/B 开） | 奖励可得数 ≥ `max(2, ceil(ρ·G))` 且已得奖励全等（奖励可得可能滞后于完成数——reward model 延迟——按可得数保守计） | `abort(group, reason="zero_variance_early")`，在途成员立即中止 | 在途成员本可能产出不同奖励 → 白白损失有效组；ρ 越小误伤越大 |
 
 early 的默认关闭是刻意保守：v1 先用 exact 验证对账链路（abort 语义、trace、废 token 统计），
 A/B 实验里再开 early 测真实收益/误伤曲线。ρ 进配置，扫描留给仿真器（S2 可零成本扫 ρ）。
@@ -270,7 +271,8 @@ class TokenBoundaryPauser(Protocol):
         self,
         receipt: PauseReceipt,
         mode: Literal["re-prefill", "shadow", "stale"],
-        version: int | None = None,  # None = 当前生效版本
+        version: int
+        | None = None,  # None = 暂停时版本（v1 stub 无账本视图；M3 本体默认查当前生效版本）
     ) -> ResumePlan: ...
 
 
@@ -316,15 +318,20 @@ v0 冻结的是每支的**判定输入**（表左列）；实现与数值实验 
 ### 8.2 v1 判定序（伪码，冻结语义）
 
 ```python
-def decide_resume(seg, obs) -> Decision:  # D2 安全点之后逐段调用
-    if group_rejected(seg.group_id):  # §6（early 命中或 weight_skip）
+def decide_resume(seg, obs) -> Decision:  # D2 安全点之后逐段调用（仅 paused 段；env_wait 见 §8.3）
+    if group_rejected(seg.group_id):  # §6（防御路径）
         return abort_group(seg.group_id, reason=...)
     if seg.current_version == obs.current_version:  # 未跨版本
         return continue_()  # 原地续跑，KV 未失效
-    if remaining_tokens_estimate(seg) <= 0:  # 已到 max_new_tokens
-        return abort_segment(seg, reason="weight_skip")
+    if remaining_tokens_estimate(seg) <= 0:
+        # 已到 max_new_tokens：不进入本判定——max_len 完成由引擎 finish 收尾（非 abort）。
+        # Decision 的 abort 只有组级，段级提前终止不经过调度器（§6.4 weight_skip 是组级判定）
+        return skip_engine_finishes()
     return re_prefill([seg.seg_id])  # v1 唯一续跑路径
 ```
+
+注：`weight_skip`（§6.4）是**组级**判定——"整组不值得在新版本上重算"，由带成本意识的策略
+产生（v1 默认策略不产生）；段级"到长"是引擎的 finish 通道，不走 abort。
 
 真值简化注记：④"重算成本 < 剩余价值"在 v1 恒真的理由——0.5B 档 re-prefill 单段开销
 （毫秒级 prefill）远小于该段剩余 decode 价值；带阈值的判定留给仿真器先扫（S2 有 `prefill_len`
@@ -367,8 +374,8 @@ D2 判定（此时其 KV 可能已被 S4 降级到 host——`kv_action` 由 S4 
 | 设计物 | 代码落点 | 验收 |
 |---|---|---|
 | §4 接口 + §8.2 判定序 | `runtime/scheduler.py`（纯逻辑，零重依赖） | mock 单测：四分支判定输入全覆盖（shadow/ε-stale 测到"留位不激活"的拒绝路径） |
-| §5 共批 | 同上，`GroupAwareBatcher` | 单测：整组不拆、减 k 逃逸、batch_id 一致性 |
-| §6 DAPO | 同上，`ZeroVarianceMonitor` + `report_reward` | 单测：exact/early、ρ 边界、重复回填报错；真机 A/B 验证对账链路 |
+| §5 共批 | 同上，`Scheduler.plan_batch`（返回 `BatchPlan`） | 单测：整组不拆、减 k 截断（FIFO 队头公平）、batch_id 一致性 |
+| §6 DAPO | 同上，`report_reward`（exact 拒收）+ `early_abort_candidate`（early，纯函数） | 单测：exact/early、ρ 边界、重复回填报错；真机 A/B 验证对账链路 |
 | §7 原语 stub | 同上，`TokenBoundaryPauser` stub | 产出的每条 trace 过 `rheotrace.validate` |
 | verl 接入 | `bench/m0/rheo_trace_hooks.py` 同款 hooks 模式（不改 verl 本体）；等 `feat/m0-baseline` 合入 main 后 rebase | A/B：scheduler on/off，0.5B，with-lock 包锁，trace 落 `bench/traces/`、报告落 `bench/results/scheduler-v1/` |
 
