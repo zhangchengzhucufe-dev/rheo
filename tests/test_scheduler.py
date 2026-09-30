@@ -162,6 +162,15 @@ class TestBatching:
         sch._segs["g0-s0"].batch_id = "b-999"
         assert sch.plan_batch(["g0"], kv_free_tokens=10**9) is None
 
+    def test_pending_groups_fifo(self):
+        # D1 候选清单来源：全体段仍 queued 的组，按登记序；派发/中止即移出
+        sch = fresh_scheduler(group_size=2, n_groups=2)
+        assert sch.pending_groups() == ["g0", "g1"]
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        assert sch.pending_groups() == ["g1"]
+        sch.apply(Decision("abort", group_id="g1", reason="weight_skip"))
+        assert sch.pending_groups() == []
+
 
 # ---------------------------------------------------------------------------
 # §8 成本模型：四分支判定输入（验收：四分支全覆盖）

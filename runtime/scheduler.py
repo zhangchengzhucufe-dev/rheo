@@ -437,6 +437,17 @@ class Scheduler:
 
     # -- D1：批组装（§5.2） ---------------------------------------------------
 
+    def pending_groups(self) -> list[str]:
+        """FIFO 候选清单：全体段仍 queued 的组（D1 的 `Observation.candidates` 来源，§5.2）。
+
+        适配层用它喂 plan_batch，不自行维护派发账本（避免两处账本漂移）。
+        """
+        return [
+            gid
+            for gid, group in self._groups.items()
+            if all(self._segs[s].state == "queued" for s in group.seg_ids)
+        ]
+
     def plan_batch(
         self,
         candidate_group_ids: Sequence[str],
