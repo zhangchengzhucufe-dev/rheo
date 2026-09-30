@@ -18,7 +18,7 @@
 1. **回放核心**（不依赖 S1，立即开工）：`sim/` 离散事件驱动，读 RheoTrace 事件流重演；集群参数化（n_gpu / 显存 / PCIe 带宽）；确定性可复现（seed）。用真实 m0 trace 校准，墙钟误差与原因写进文档。
 2. **策略 harness**（等 S1 设计文档 D1 合入后）：按 S1 冻结的 `policy(observation) → decision` 接口实现三个策略——FIFO 基线、组感知、错峰批（staggered batch）。
 3. **实验 + 报告** `docs/sim-study-v0.md`：同一批 trace（真实 + 合成长尾 + agent env-wait）上对比策略：吞吐、停顿分解、长尾掉队份额。至少产出一个"仿真先证明、待真机复核"的调度结论给 S1。
-4. **接手 rheotrace §8 增量**：S4 等会话的字段需求从 `docs/issues.md` 领，走 spec §8 向后兼容增量流程（改 spec + 改 validator/writer/reader + 测试，一个 PR 内完成）。
+4. **接手 rheotrace §8 增量**：字段需求从 `docs/issues.md` 领，走 spec §8 向后兼容增量流程（改 spec + 改 validator/writer/reader + 测试，一个 PR 内完成）。**第一单已立案：[#28](https://github.com/zhangchengzhucufe-dev/rheo/issues/28) 覆盖率规则正式进 validator + `resume_from_step` 字段**（merge 侧 A 已实现，你做 validator/spec 侧）。
 
 ## 验收
 
