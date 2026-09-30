@@ -193,12 +193,13 @@ class TraceAdapter:
     def report_reward(self, group_id: str, seg_id: str, reward: float) -> None:
         view = self.sch.report_reward(group_id, seg_id, reward)
         if view is not None:  # exact 零方差拒收 → §6.5 口径 2 过渡事件（W06 前向兼容）
+            total = sum(self.sch._segs[s].n_gen_tokens for s in self.sch._groups[group_id].seg_ids)
             self.w.emit(
                 "scheduler_group_reject",
                 ts=self.tick(),
                 group_id=group_id,
                 reason="zero_variance",
-                meta={"n_gen_tokens_group": 0},
+                meta={"n_gen_tokens_group": total},  # 全组已生成 token：拒收即全废（§6.5）
             )
 
     def _emit_segment_end(self, seg_id: str, *, aborted: bool, reason: str | None) -> None:
@@ -324,3 +325,9 @@ class TestSchedulerTraceIntegration:
         assert waste["aborted_tokens"] == 20
         assert waste["by_reason"] == {"zero_variance_early": 2}
         assert waste["rejected_groups"] == ["g0"]
+
+        # 回读拒收事件：组级废 token = 全组已生成（g0 两段各 10）
+        rejects = [e for e in read(path) if e["type"] == "scheduler_group_reject"]
+        assert len(rejects) == 1
+        assert rejects[0]["group_id"] == "g0"
+        assert rejects[0]["meta"]["n_gen_tokens_group"] == 20
