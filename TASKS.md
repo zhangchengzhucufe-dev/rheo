@@ -5,13 +5,19 @@
 
 ## 阶段 1 状态（归档，2026-09-29 ~ 09-30）
 
-- [x] M0：GRPO+LoRA 基线跑通、真实 trace 产出（feat/m0-baseline 最终验证中，PR 后合入）
+- [x] M0：GRPO+LoRA 基线跑通（40 步 rc=0，GSM8K 68.5→75.5%，成本 ¥10-11）
 - [x] RheoTrace v0.1 规格冻结 + `rheotrace` 包（98 测试绿，已合入 main）
 - [x] metrics-v0 口径定稿 + `bench.analysis` 报告流水线（已合入 main）
-- [x] 附加产出：protocol v0 预研、verl 补丁记录、Apache 2.0 开源门面
 - [x] 硬件事实修正：6GB 实测（见 PLAN §9），默认实验规模改 0.5B
 
-## 阶段 2 worktree 布局
+## 阶段 1.5 收尾（进行中，A 专属）
+
+云端正式跑复盘出两处交付硬伤：trace 只覆盖 step 30-40（spill 目录误清，G1）、验证点缺 1 个（G3）。
+B/C **不回炉**（其产物被复盘点名合格）；A 按 **[TASK-A2.md](TASK-A2.md)** 收尾：复盘加固 5 项必修
++ 完整重跑（¥4-6，1.5-2h，单配置无拼接）+ PR 合 main。
+validator 覆盖率断言 → 归 S2 的第一单 §8 增量；verl 源码建议（C10/A4 等）→ 归 S6 的 PR 素材。
+
+## 阶段 2 worktree 布局（与阶段 1.5 并行开工；仅 S5 的最终数字等 A 的完整 trace）
 
 | 会话 | 目录 | 分支 | 任务书 | 资源 |
 |---|---|---|---|---|
