@@ -6,8 +6,17 @@
 虚拟钟、全事件显式 ts（spec §9：与 auto-now 混流必乱序）、终态只经 segment_end。
 """
 
-from rheotrace import validate
-from runtime.scheduler import Decision, Scheduler, SchedulerConfig, V1Policy, validate_decision
+from rheotrace import read, validate
+from runtime.scheduler import (
+    Decision,
+    PauseReceipt,
+    ResumePlan,
+    Scheduler,
+    SchedulerConfig,
+    TokenBoundaryPauser,
+    V1Policy,
+    validate_decision,
+)
 
 
 class TraceAdapter:
@@ -20,9 +29,12 @@ class TraceAdapter:
         self.t: int = self.w.run_start_ts
         self.sch = Scheduler()
         self.policy = V1Policy(SchedulerConfig(early_abort_rho=0.5))
+        self.pauser = TokenBoundaryPauser()  # §7 原语 stub：pause 收据 / resume 计划
         self.version = 0  # 账本：weight_sync 推进，segment_end.end_version 依据（spec §5.1）
         self.state: dict[str, str] = {}  # seg_id → 对外轨迹状态（适配层自有账）
         self.seg_meta: dict[str, dict] = {}
+        self.receipts: dict[str, PauseReceipt] = {}
+        self.resume_plans: dict[str, ResumePlan] = {}
 
     def tick(self, delta_ns: int = 1_000_000) -> int:
         self.t += delta_ns
@@ -37,7 +49,7 @@ class TraceAdapter:
             self.sch.register_segment(
                 s, group_id, n_prompt_tokens=np_, max_new_tokens=max_new, birth_version=self.version
             )
-            self.state[s] = "running"
+            self.state[s] = "queued"  # 已登记未派发：trace 上无存在
             self.seg_meta[s] = {"n_prompt": np_}
 
     def dispatch(self, candidate_groups: list[str], kv_free_tokens: int = 10**9) -> str | None:
@@ -55,13 +67,18 @@ class TraceAdapter:
                 t_start=self.t,
                 n_prompt_tokens=self.seg_meta[seg_id]["n_prompt"],
             )
+            self.state[seg_id] = "running"
         return plan.batch_id
 
     # -- 执行阶段（引擎回调） ---------------------------------------------------
 
     def prefill(self, seg_id: str, *, reason: str | None = None) -> None:
         t0, t1 = self.tick(), self.tick()
-        n = self.seg_meta[seg_id]["n_prompt"]
+        if reason == "re-prefill":
+            # §7.3 冻结：KV 已 drop，重算全长 = n_prompt + 已生成（ResumePlan.prefill_len）
+            n = self.resume_plans[seg_id].prefill_len
+        else:
+            n = self.seg_meta[seg_id]["n_prompt"]
         fields = {"meta": {"reason": reason}} if reason else {}
         self.w.emit(
             "phase_span",
@@ -115,6 +132,9 @@ class TraceAdapter:
 
     def apply(self, d: Decision, *, current_version: int) -> None:
         if d.action == "pause":
+            views = [self.sch._segs[s].view() for s in d.targets]  # 须在置 paused 前取（§7 契约）
+            for receipt in self.pauser.pause(views):
+                self.receipts[receipt.seg_id] = receipt
             self.sch.apply(d)
             for seg_id in d.targets:
                 self.w.emit(
@@ -127,6 +147,11 @@ class TraceAdapter:
                 )
                 self.state[seg_id] = "paused"
         elif d.action == "re-prefill":
+            for seg_id in d.targets:
+                plan = self.pauser.resume(
+                    self.receipts[seg_id], "re-prefill", version=current_version
+                )
+                self.resume_plans[seg_id] = plan
             self.sch.apply(d, current_version=current_version)
             for seg_id in d.targets:
                 self.w.emit(
@@ -139,10 +164,13 @@ class TraceAdapter:
                 self.state[seg_id] = "running"
         elif d.action == "abort":
             group = self.sch._groups[d.group_id]
-            inflight = [s for s in group.seg_ids if self.state[s] not in ("finished", "aborted")]
-            self.sch.apply(d)  # 调度器记账（废 token 对账）
-            for seg_id in inflight:  # 终态转换只经 segment_end（spec §2，无中间 state 事件）
+            started = [
+                s for s in group.seg_ids if self.state[s] not in ("finished", "aborted", "queued")
+            ]
+            self.sch.apply(d)  # 调度器记账：在途 + 排队段（排队零 token，§5.2）
+            for seg_id in started:  # 终态转换只经 segment_end（spec §2，无中间 state 事件）
                 self._emit_segment_end(seg_id, aborted=True, reason=d.reason)
+            # queued 段：trace 上无存在（无 segment_start），不发任何事件
         else:
             self.sch.apply(d)
 
@@ -216,11 +244,14 @@ class TestSchedulerTraceIntegration:
         assert set(applied[0].targets) == {"g0-s0", "g0-s1"}
         ad.sync_weights(1, trainer_step=1)
 
-        # D2 续跑：全体跨版本 → re-prefill
+        # D2 续跑：全体跨版本 → re-prefill（§7 原语给出冻结输入 prefill_len = n_prompt + n_gen）
         applied = ad.run_policy_until_continue(current_version=1)
         assert [d.action for d in applied] == ["re-prefill"]
+        assert ad.resume_plans["g0-s0"].prefill_len == 150  # 100 + 50
+        assert ad.resume_plans["g0-s1"].prefill_len == 170  # 120 + 50
+        assert ad.resume_plans["g0-s0"].kv_action == "drop"
         for seg in ("g0-s0", "g0-s1"):
-            ad.prefill(seg, reason="re-prefill")  # n_tokens = n_prompt（重算全长）
+            ad.prefill(seg, reason="re-prefill")  # span n_tokens = prefill_len（§7.3）
             ad.decode(seg, 40 if seg.endswith("s0") else 30)
 
         ad.finish("g0-s0")
@@ -240,6 +271,16 @@ class TestSchedulerTraceIntegration:
         ad.close()
         report = validate(path, strict=True)  # 有 error 即抛
         assert report.warnings == [], f"场景 A 应零警告：{report.warnings}"
+
+        # 回读落盘 trace：re-prefill span 的 n_tokens 必须是 prefill_len（§7.3 冻结映射）
+        spans = [
+            e
+            for e in read(path)
+            if e["type"] == "phase_span"
+            and e.get("meta", {}).get("reason") == "re-prefill"
+            and e["seg_id"] == "g0-s0"
+        ]
+        assert len(spans) == 1 and spans[0]["n_tokens"] == 150
 
     def test_scenario_b_dapo_early_abort_and_exact_reject(self, tmp_path):
         """early abort（组级中止在途段）+ exact 拒收（scheduler_group_reject，W06）。"""
