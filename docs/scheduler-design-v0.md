@@ -74,9 +74,10 @@ S2 仿真器 `from runtime.scheduler import Observation, Decision, Policy` 直�
 ```python
 @dataclass(frozen=True)
 class MemoryWatermark:
-    kv_used_bytes: int          # 引擎 KV 池已用
-    kv_total_bytes: int         # 引擎 KV 池总量
+    kv_used_bytes: int  # 引擎 KV 池已用
+    kv_total_bytes: int  # 引擎 KV 池总量
     # v2 预留：host_pinned_used_bytes 等（S4 分级留存），v1 恒缺省
+
 
 @dataclass(frozen=True)
 class SegmentView:
@@ -85,33 +86,35 @@ class SegmentView:
     state: Literal["running", "paused", "env_wait"]
     n_prompt_tokens: int
     n_gen_tokens: int
-    max_new_tokens: int | None          # 引擎可得时填写
+    max_new_tokens: int | None  # 引擎可得时填写
     birth_version: int
-    current_version: int                # 该段最近一次前向所用的权重版本（v1 == birth_version 或上一同步版本）
-    batch_id: str | None                # 已派发段才有
-    finish_mode: Literal["exact", "shadow", "stale"] | None   # paused 段的预定续跑方式（§8）
+    current_version: int  # 该段最近一次前向所用的权重版本（v1 == birth_version 或上一同步版本）
+    batch_id: str | None  # 已派发段才有
+    finish_mode: Literal["exact", "shadow", "stale"] | None  # paused 段的预定续跑方式（§8）
+
 
 @dataclass(frozen=True)
 class GroupView:
     group_id: str
-    n_total: int                        # G
+    n_total: int  # G
     n_running: int
     n_paused: int
     n_env_wait: int
     n_finished: int
     n_aborted: int
-    finished_rewards: tuple[float, ...] # 已完成成员奖励，按完成序；引擎拿不到奖励时为空 tuple
-    dispatched: bool                    # 是否已有段进入过 GPU
+    finished_rewards: tuple[float, ...]  # 已完成成员奖励，按完成序；引擎拿不到奖励时为空 tuple
+    dispatched: bool  # 是否已有段进入过 GPU
+
 
 @dataclass(frozen=True)
 class Observation:
-    t_now_ns: int                       # 决策时刻（wall ns；仿真器为虚拟钟——策略不得据此做绝对时间判断）
-    current_version: int                # 当前生效权重版本
-    pending_sync: bool                  # True = weight_sync 安全点已到/正在逼近（D2 上下文）
-    segments: tuple[SegmentView, ...]   # 全部在途段
-    groups: tuple[GroupView, ...]       # 全部未收尾组（含待派与在途）
+    t_now_ns: int  # 决策时刻（wall ns；仿真器为虚拟钟——策略不得据此做绝对时间判断）
+    current_version: int  # 当前生效权重版本
+    pending_sync: bool  # True = weight_sync 安全点已到/正在逼近（D2 上下文）
+    segments: tuple[SegmentView, ...]  # 全部在途段
+    groups: tuple[GroupView, ...]  # 全部未收尾组（含待派与在途）
     memory: MemoryWatermark
-    candidates: tuple[str, ...]         # D1 时：可派组 id 列表；其余决策点为空
+    candidates: tuple[str, ...]  # D1 时：可派组 id 列表；其余决策点为空
 ```
 
 冻结规则：
@@ -127,9 +130,9 @@ class Observation:
 @dataclass(frozen=True)
 class Decision:
     action: Literal["continue", "pause", "re-prefill", "abort"]
-    targets: tuple[str, ...] = ()   # seg_id 列表；abort 时为空（组级，见 group_id）
-    group_id: str | None = None     # 仅 abort：目标组，组内全部未终态段中止
-    reason: str | None = None       # abort 必填（落 segment_end.reason）；pause/re-prefill 可选备注
+    targets: tuple[str, ...] = ()  # seg_id 列表；abort 时为空（组级，见 group_id）
+    group_id: str | None = None  # 仅 abort：目标组，组内全部未终态段中止
+    reason: str | None = None  # abort 必填（落 segment_end.reason）；pause/re-prefill 可选备注
 ```
 
 | action | 语义 | 合法载荷 | 引擎侧效果（trace 映射） |
@@ -144,8 +147,9 @@ class Decision:
 - `abort.reason` 必须 ∈ §6.4 的 reason 注册表（对齐 spec E15：aborted 必带 reason）。
 - `re-prefill` 的 targets 必须处于 `paused`；`pause` 的 targets 必须处于 `running`。
 - `abort` 只作用于未收尾组；组内已 finished 段不受影响（其数据去留见 §6.5）。
-- D2 上下文（`pending_sync=True`）下 policy 不得返回 `continue`——安全点是强制的，
-  `continue` 只在非同步决策点合法。policy 返回后引擎仍有一道防线：非法决策按异常处理并落 `schedule` span 备注。
+- D2 上下文（`pending_sync=True`）下，只要仍有 running 段，policy 就不得返回 `continue`——
+  安全点是强制的；全体在途段已到界（running 集为空）后，`continue` 合法且表示"放行指针翻转"。
+  policy 返回后引擎仍有一道防线：非法决策按异常处理并落 `schedule` span 备注。
 
 ### 4.4 确定性要求（S2 重放契约）
 
@@ -251,29 +255,32 @@ A/B 实验里再开 early 测真实收益/误伤曲线。ρ 进配置，扫描�
 ```python
 class PauseReceipt:
     seg_id: str
-    paused_at_version: int      # 暂停时生效版本
-    n_gen_tokens: int           # 已产出 token 数（KV 内）
+    paused_at_version: int  # 暂停时生效版本
+    n_prompt_tokens: int  # 暂停段的 prompt 长度（resume 处推 prefill_len 用）
+    n_gen_tokens: int  # 已产出 token 数（KV 内）
+
 
 class TokenBoundaryPauser(Protocol):
     def pause(
         self,
-        segs: Sequence[SegmentHandle],   # 在途段句柄（引擎侧对象）
+        segs: Sequence[SegmentHandle],  # 在途段句柄（引擎侧对象）
         reason: str = "token_boundary",
     ) -> list[PauseReceipt]: ...
     def resume(
         self,
         receipt: PauseReceipt,
         mode: Literal["re-prefill", "shadow", "stale"],
-        version: int | None = None,      # None = 当前生效版本
+        version: int | None = None,  # None = 当前生效版本
     ) -> ResumePlan: ...
+
 
 @dataclass(frozen=True)
 class ResumePlan:
     seg_id: str
     mode: Literal["re-prefill", "shadow", "stale"]
     target_version: int
-    prefill_len: int            # re-prefill 需重算的长度 = n_prompt_tokens + n_gen_tokens
-    kv_action: Literal["drop", "keep", "demote"]   # v1 恒 "drop"；shadow/stale 的 KV 留存 = M3/M4
+    prefill_len: int  # re-prefill 需重算的长度 = n_prompt_tokens + n_gen_tokens
+    kv_action: Literal["drop", "keep", "demote"]  # v1 恒 "drop"；shadow/stale 的 KV 留存 = M3/M4
 ```
 
 - `resume.mode` 的三分支即 §8 成本模型的输出面；v1 只会产生 `re-prefill`（`kv_action="drop"`）。
@@ -309,14 +316,14 @@ v0 冻结的是每支的**判定输入**（表左列）；实现与数值实验 
 ### 8.2 v1 判定序（伪码，冻结语义）
 
 ```python
-def decide_resume(seg, obs) -> Decision:            # D2 安全点之后逐段调用
-    if group_rejected(seg.group_id):                # §6（early 命中或 weight_skip）
+def decide_resume(seg, obs) -> Decision:  # D2 安全点之后逐段调用
+    if group_rejected(seg.group_id):  # §6（early 命中或 weight_skip）
         return abort_group(seg.group_id, reason=...)
     if seg.current_version == obs.current_version:  # 未跨版本
-        return continue_()                          # 原地续跑，KV 未失效
-    if remaining_tokens_estimate(seg) <= 0:         # 已到 max_new_tokens
+        return continue_()  # 原地续跑，KV 未失效
+    if remaining_tokens_estimate(seg) <= 0:  # 已到 max_new_tokens
         return abort_segment(seg, reason="weight_skip")
-    return re_prefill([seg.seg_id])                 # v1 唯一续跑路径
+    return re_prefill([seg.seg_id])  # v1 唯一续跑路径
 ```
 
 真值简化注记：④"重算成本 < 剩余价值"在 v1 恒真的理由——0.5B 档 re-prefill 单段开销
