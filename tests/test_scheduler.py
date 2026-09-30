@@ -10,6 +10,8 @@ from runtime.scheduler import (
     ABORT_REASONS,
     Decision,
     GroupView,
+    MemoryWatermark,
+    Observation,
     Scheduler,
     SchedulerConfig,
     SchedulerError,
@@ -75,6 +77,30 @@ def fresh_scheduler(group_size=4, n_groups=2, cfg: SchedulerConfig | None = None
     return sch
 
 
+class TestConfigAndRegistration:
+    def test_rho_bounds(self):
+        assert SchedulerConfig(early_abort_rho=0.5).early_abort_rho == 0.5
+        assert SchedulerConfig(early_abort_rho=None).early_abort_rho is None
+        for bad in (0.0, -0.1, 1.5):
+            with pytest.raises(SchedulerError, match="early_abort_rho"):
+                SchedulerConfig(early_abort_rho=bad)
+
+    def test_default_max_new_tokens_must_be_positive(self):
+        with pytest.raises(SchedulerError, match="default_max_new_tokens"):
+            SchedulerConfig(default_max_new_tokens=0)
+
+    def test_negative_birth_version_rejected(self):
+        sch = Scheduler()
+        sch.register_group("g0", ["s0"])
+        with pytest.raises(SchedulerError, match="birth_version"):
+            sch.register_segment("s0", "g0", n_prompt_tokens=1, birth_version=-1)
+
+    def test_duplicate_seg_ids_in_group_rejected(self):
+        sch = Scheduler()
+        with pytest.raises(SchedulerError, match="重复段 id"):
+            sch.register_group("g0", ["s0", "s0"])
+
+
 # ---------------------------------------------------------------------------
 # §5 组感知共批
 # ---------------------------------------------------------------------------
@@ -95,6 +121,17 @@ class TestBatching:
         plan = sch.plan_batch(["g0", "g1"], kv_free_tokens=1000)
         assert plan is not None
         assert plan.group_ids == ("g0",) and len(plan.seg_ids) == 4
+
+    def test_budget_overflow_truncates_fifo_no_starvation_skipping(self):
+        sch = Scheduler()
+        # g0 大组（2×900=1800），g1 小组（1×100=100）：预算 1000 连小组都够，
+        # 但大组在队头装不下即整波不派（减 k 是截断不是跳过，FIFO 队头公平）
+        sch.register_group("g0", ["g0-s0", "g0-s1"])
+        for s in ("g0-s0", "g0-s1"):
+            sch.register_segment(s, "g0", n_prompt_tokens=10, max_new_tokens=900)
+        sch.register_group("g1", ["g1-s0"])
+        sch.register_segment("g1-s0", "g1", n_prompt_tokens=10, max_new_tokens=100)
+        assert sch.plan_batch(["g0", "g1"], kv_free_tokens=1000) is None
 
     def test_single_group_too_large_returns_none(self):
         sch = fresh_scheduler(group_size=4)
@@ -148,13 +185,15 @@ class TestCostModelBranches:
         )
         assert d.action == "re-prefill"
 
-    def test_weight_skip_when_no_remaining_value(self):
-        d = decide_resume(
-            make_seg(current_version=1, n_gen_tokens=200, max_new_tokens=200),
-            current_version=2,
-            group_rejected=False,
-        )
-        assert d.action == "abort" and d.reason == "weight_skip"
+    def test_max_len_segment_never_enters_decision(self):
+        # 到长段是引擎 finish 通道（§8.2 注）：不产生 abort（组级 abort 会连坐全组），
+        # 而是契约错误——适配层必须在进入判定前收尾
+        with pytest.raises(SchedulerError, match="finish"):
+            decide_resume(
+                make_seg(current_version=1, n_gen_tokens=200, max_new_tokens=200),
+                current_version=2,
+                group_rejected=False,
+            )
 
     def test_group_rejected_aborts(self):
         d = decide_resume(make_seg(current_version=1), current_version=2, group_rejected=True)
@@ -277,8 +316,6 @@ class TestValidateDecision:
     def _obs(self, pending_sync=False, include_group=True):
         segs = (make_seg("s1", state="running"), make_seg("s2", state="paused"))
         groups = (make_group(),) if include_group else ()
-        from runtime.scheduler import MemoryWatermark, Observation
-
         return Observation(
             t_now_ns=0,
             current_version=1,
@@ -313,10 +350,28 @@ class TestValidateDecision:
     def test_state_preconditions(self):
         with pytest.raises(SchedulerError, match="running"):
             validate_decision(self._obs(), Decision("pause", targets=("s2",)))
-        with pytest.raises(SchedulerError, match="paused"):
+        with pytest.raises(SchedulerError, match="须为 paused 或 env_wait"):
             validate_decision(self._obs(), Decision("re-prefill", targets=("s1",)))
         with pytest.raises(SchedulerError, match="不在途"):
             validate_decision(self._obs(), Decision("pause", targets=("s9",)))
+
+    def test_re_prefill_from_env_wait_is_legal(self):
+        # §8.3 唤醒路径：env_wait 段跨版本 → re-prefill 合法（无需 paused 中转）
+        obs = self._obs()
+        env_wait_obs = Observation(
+            t_now_ns=0,
+            current_version=2,
+            pending_sync=False,
+            segments=(make_seg("s1", state="env_wait", current_version=1),),
+            groups=obs.groups,
+            memory=obs.memory,
+            candidates=(),
+        )
+        validate_decision(env_wait_obs, Decision("re-prefill", targets=("s1",)))
+        d = decide_resume(
+            make_seg("s1", state="env_wait", current_version=1), 2, group_rejected=False
+        )
+        assert d.action == "re-prefill" and d.targets == ("s1",)
 
     def test_valid_decisions_pass(self):
         obs = self._obs(pending_sync=True)
@@ -332,6 +387,21 @@ class TestValidateDecision:
 
 
 class TestStateMachineAndWaste:
+    def test_advance_requires_running_state(self):
+        # 非 running 段推进 token 会让 n_gen_tokens 与 trace 失真，污染废 token 对账（§6.5）
+        sch = fresh_scheduler(group_size=1, n_groups=1)
+        with pytest.raises(SchedulerError, match="未知段"):
+            sch.advance("nope", 1)  # 未知段
+        sch.set_state("g0-s0", "paused")
+        with pytest.raises(SchedulerError, match="只有 running 段"):
+            sch.advance("g0-s0", 1)
+        sch.set_state("g0-s0", "running")
+        sch.advance("g0-s0", 5)
+        sch.finish("g0-s0")
+        with pytest.raises(SchedulerError, match="只有 running 段"):
+            sch.advance("g0-s0", 1)
+        assert sch._segs["g0-s0"].n_gen_tokens == 5
+
     def test_illegal_transition_rejected(self):
         sch = fresh_scheduler(group_size=1, n_groups=1)
         sch.set_state("g0-s0", "env_wait")
@@ -377,6 +447,47 @@ class TestStateMachineAndWaste:
             sch.register_segment("sx", "ghost", n_prompt_tokens=1)
         with pytest.raises(SchedulerError, match="成员清单"):
             sch.register_segment("sx", "g0", n_prompt_tokens=1)
+
+
+class TestOnSync:
+    def test_env_wait_excluded_decided_at_wake(self):
+        # §8.3：env_wait 段不进安全点判定（唤醒后由适配层调 decide_resume）
+        sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        sch.set_state("g0-s0", "paused")
+        sch.set_state("g0-s1", "env_wait")
+        decisions = sch.on_sync(current_version=2)
+        # 只有 paused 段出 re-prefill；env_wait 段不出决策
+        assert decisions == [Decision("re-prefill", targets=("g0-s0",))]
+
+    def test_on_sync_decisions_pass_own_validation(self):
+        # 产出 → 校验往返：on_sync 的每条决策必须过得了 §4.3 防线
+        sch = fresh_scheduler(group_size=2, n_groups=1)
+        sch.plan_batch(["g0"], kv_free_tokens=10**9)
+        sch.apply(Decision("pause", targets=("g0-s0", "g0-s1")))
+        obs = sch.observation(2, 0, 10**9)
+        for d in sch.on_sync(2):
+            validate_decision(obs, d)
+
+    def test_on_sync_coalesces_group_abort(self):
+        sch = Scheduler(SchedulerConfig(early_abort_rho=0.5))
+        segs = [f"g0-s{i}" for i in range(2)]
+        sch.register_group("g0", segs)
+        for s in segs:
+            sch.register_segment(s, "g0", n_prompt_tokens=10, max_new_tokens=100)
+        sch.set_state("g0-s0", "paused")
+        sch.set_state("g0-s1", "paused")
+        sch._groups["g0"].rejected = True  # exact 拒收后残留 paused 段（防御路径）
+        decisions = sch.on_sync(2)
+        assert decisions == [Decision("abort", group_id="g0", reason="zero_variance_early")]
+
+    def test_apply_rejects_bad_abort_payload(self):
+        # 适配层绕过 validate_decision 直呼 apply 时的第二道防线
+        sch = fresh_scheduler(group_size=1, n_groups=1)
+        with pytest.raises(SchedulerError, match="载荷非法"):
+            sch.apply(Decision("abort", group_id="g0", reason="made_up"))
+        with pytest.raises(SchedulerError, match="载荷非法"):
+            sch.apply(Decision("abort", reason="weight_skip"))
 
 
 # ---------------------------------------------------------------------------
