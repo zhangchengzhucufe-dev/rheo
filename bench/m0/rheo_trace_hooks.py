@@ -32,6 +32,9 @@ import time
 from pathlib import Path
 
 TRACE_DIR = Path(os.environ.get("RHEO_TRACE_DIR", "/tmp/rheo-trace"))
+# 每次启动一个 run_id，spill 按 run_id 分子目录（TASK-A2 D14/G1）：
+# 崩溃续跑时事件续写进同一 run 目录；merge 按 run_id 合并，绝不混入历史 run
+RUN_ID = os.environ.get("RHEO_RUN_ID", "r-unknown")
 FORMAT = "rheo-trace-spill-1"
 
 _GEN_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_gen_timing", default=None)
@@ -39,14 +42,20 @@ _WORKER_CV: contextvars.ContextVar = contextvars.ContextVar("rheo_worker_ctx", d
 
 
 def _spill_path() -> Path:
-    TRACE_DIR.mkdir(parents=True, exist_ok=True)
-    return TRACE_DIR / f"spill-{os.getpid()}.jsonl"
+    (TRACE_DIR / RUN_ID).mkdir(parents=True, exist_ok=True)
+    return TRACE_DIR / RUN_ID / f"spill-{os.getpid()}.jsonl"
 
 
 def spill(type_: str, **fields: dict) -> None:
     """Append one event to this process's spill file. Never raises into verl."""
     try:
-        ev = {"type": type_, "ts": time.time_ns(), "fmt": FORMAT, "pid": os.getpid()}
+        ev = {
+            "type": type_,
+            "ts": time.time_ns(),
+            "fmt": FORMAT,
+            "pid": os.getpid(),
+            "run_id": RUN_ID,
+        }
         ev.update(fields)
         with open(_spill_path(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")) + "\n")

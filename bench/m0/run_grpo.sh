@@ -1,37 +1,41 @@
 #!/usr/bin/env bash
-# M0 baseline: verl GRPO + LoRA + 8bit optimizer, Qwen2.5-1.5B-Instruct, single RTX 3060 (6GB).
+# M0 baseline: verl GRPO + LoRA + 8bit optimizer, Qwen2.5-1.5B-Instruct, single GPU.
 #
-# 必须经 GPU 锁运行:
+# 必须经 GPU 锁运行（本地 WSL 示例）:
 #   ~/tools/bin/with-lock gpu 1800 -- bash bench/m0/run_grpo.sh
-# 每 5 步存一次 checkpoint 到 ~/tools/rheo-checkpoints/$EXP（防断电；
-# verl 的 resume_mode=auto 会自动从最新 checkpoint 续跑，重跑同一命令即可）
+# 云端（AutoDL 等）直接跑 supervise_run.sh，见 bench/m0/CLOUD_GUIDE.md
 #
-# 显存策略(6GB 卡 + Windows 桌面占用约 1-2.5GB):
-#   - 生成期 vLLM 独占 GPU(util≤0.72, 动态; KV ~1.2GB), util 太小时 KV 不足,
-#     ~0.5GB, 生成陷入抢占-重算循环(实测 35min 跑不完一步)
-#   - 训练期 vLLM sleep level 2 全量释放, FSDP 装载 3.1GB 主干
-#   - lora.merge=true: 每步把 LoRA 合并进基础权重同步给 vLLM → sleep level 2
-#     (默认 lora_as_adapter 模式只 sleep level 1, vLLM 保留 3.1GB 权重,
-#      6GB 卡上 FSDP 加载训练必然爆显存 —— WDDM 报 "device not ready")
-#   - actor: FSDP param/optimizer 全 offload, LoRA 冻结主干, bnb AdamW8bit
-#   - 不加载 reference policy(GRPO 无 KL), 省一份 3GB 权重
-#   - WSL2 不支持 CUDA IPC, 权重传输走宿主共享内存(VERL_DISABLE_CUDA_IPC=1,
-#     需 verl/utils/device.py 本地补丁, 见 bench/results/m0-baseline/env.md)
+# 可移植性（TASK-A2 B6/B7/F20）: 无私人绝对路径——REPO_DIR 从脚本位置推导，
+# PYTHON 默认取 PATH 上的 python（建议先激活 venv），sitecustomize 经
+# PYTHONPATH 零拷贝加载（不再需要 cp 进 site-packages）。
+#
+# 失败分类（TASK-A2 E15/C11）:
+#   - 导入/配置/路径类异常 → 立即终止并高亮根因，不烧重试
+#   - OOM/引擎启动类       → 降档重试，梯子 = util↓ → micro 减半 → max_num_seqs 减半
+#   - WDDM/驱动瞬态        → 同档重试
 set -euo pipefail
 
-PYTHON=${PYTHON:-$HOME/tools/venvs/rheo/bin/python}
+PYTHON=${PYTHON:-python}
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL=${MODEL:-$HOME/models/Qwen2.5-1.5B-Instruct}
 DATA_DIR=${DATA_DIR:-$HOME/datasets/rheo/gsm8k}
-RESULTS="$REPO_DIR/bench/results/m0-baseline"
-CKPT_DIR=${CKPT_DIR:-$HOME/tools/rheo-checkpoints}
-STEPS=${STEPS:-60}
+
+# scratch 盘统一变量（TASK-A2 D13）：checkpoint / 日志 / trace spill 都走这里
+SCRATCH=${SCRATCH:-$HOME/rheo-scratch}
+CKPT_DIR=${CKPT_DIR:-$SCRATCH/checkpoints}
+LOG_DIR=${LOG_DIR:-$SCRATCH/logs}
+SPILL_ROOT=${SPILL_ROOT:-$SCRATCH/spill}
+
+STEPS=${STEPS:-40}
 BATCH=${BATCH:-16}
-ROLLOUT_N=${ROLLOUT_N:-8}
 MAX_RESP=${MAX_RESP:-512}
+ROLLOUT_N=${ROLLOUT_N:-8}
+MICRO=${MICRO:-2}          # TASK-A2 重跑规格：micro=2 安全档跑全程（G4）
+UTIL=${UTIL:-0.55}         # TASK-A2 重跑规格：util=0.55 安全档
 TEST_FREQ=${TEST_FREQ:-10}
-VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-true}
+VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-false}
 EXP=${EXP:-grpo-lora-qwen25-1.5b}
+SEQS=${SEQS:-48}
 
 # verl 约束：train_batch_size >= ppo_mini_batch_size(8)，且单卡下应为 8 的倍数
 if [ "$BATCH" -lt 8 ] || [ $((BATCH % 8)) -ne 0 ]; then
@@ -39,47 +43,50 @@ if [ "$BATCH" -lt 8 ] || [ $((BATCH % 8)) -ne 0 ]; then
   exit 64
 fi
 
-mkdir -p "$RESULTS/logs" "$CKPT_DIR"
+mkdir -p "$CKPT_DIR" "$LOG_DIR"
 
-# ray/vllm 在 WSL2 下的稳定性开关
-export RAY_memory_monitor_refresh_ms=0
 export TOKENIZERS_PARALLELISM=false
 export VLLM_LOGGING_LEVEL=WARNING
 export HYDRA_FULL_ERROR=1
-export TENSORBOARD_DIR="$RESULTS/tb/$EXP"
-# WSL2 不支持 CUDA IPC：verl 权重传输走宿主共享内存
-# （需要 ~/tools/venvs/rheo 中 verl/utils/device.py 的本地补丁，见 env.md）
-export VERL_DISABLE_CUDA_IPC=1
-# WSL2/WDDM：vLLM 进程 sleep 释放数 GB 会破坏训练进程的经典缓存分配器
-# （CUDACachingAllocator INTERNAL ASSERT），改用 VMM expandable segments 并
-# 禁止 verl 运行时切换回经典池（device.py 本地补丁）
-export PYTORCH_ALLOC_CONF=expandable_segments:True
-export RHEO_KEEP_EXPANDABLE=1
-# RheoTrace 插桩（TASK-A step 3）：置 1 时每个 ray worker 进程经 sitecustomize
-# 加载 bench/m0/rheo_trace_hooks.py，事件落 $RHEO_TRACE_DIR/spill-<pid>.jsonl，
-# 训练结束后用 bench/m0/merge_trace.py 合并 + validate
-# spill 目录生命周期：全新跑之前清空它；断点续跑时保留（merge 需要完整历史）
+export TENSORBOARD_DIR="$SCRATCH/tb/$EXP"
+
+# ---- WSL2 专属稳定性开关（原生 Linux 自动跳过）----
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  export RAY_memory_monitor_refresh_ms=0
+  # WSL2 不支持 CUDA IPC：verl 权重传输走宿主共享内存
+  # （需要 venv 中 verl/utils/device.py 的本地补丁，见 bench/results/m0-baseline/env.md）
+  export VERL_DISABLE_CUDA_IPC=1
+  # WSL2/WDDM：vLLM sleep 释放数 GB 会破坏经典缓存分配器 → VMM expandable segments
+  export PYTORCH_ALLOC_CONF=expandable_segments:True
+  export RHEO_KEEP_EXPANDABLE=1
+  echo "[run_grpo] WSL2 detected: WDDM workarounds enabled"
+fi
+
+# RheoTrace 插桩（TASK-A2 G1）：每个 run 一个 spill 子目录，续跑绝不清理
+# sitecustomize 经 PYTHONPATH 零拷贝加载（bench/m0/sitecustomize.py）
 export RHEO_TRACE=${RHEO_TRACE:-0}
 export RHEO_TRACE_HOOKS="$REPO_DIR/bench/m0/rheo_trace_hooks.py"
-export RHEO_TRACE_DIR=${RHEO_TRACE_DIR:-$RESULTS/traces-spill}
-
-# rollout util 按启动时实际空闲显存动态算（Windows 桌面占用会波动，vLLM 0.12
-# 启动时检查 free < util*total 直接拒绝）。边距 0.6GB；若 vLLM 仍报 Free memory
-# 不足则降 0.06 重试，最低 0.55（KV 会小、生成会慢，但能跑）。
-UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "import torch; f,t=torch.cuda.mem_get_info(0); f/=2**30; t/=2**30; print(f'{min(0.72, max(0.55, (f-0.6)/t)):.2f}')")
-FREE=$(RHEO_TRACE=0 "$PYTHON" -c "import torch; print(f'{torch.cuda.mem_get_info(0)[0]/2**30:.2f}')")
+export RHEO_TRACE_DIR="$SPILL_ROOT"
+RUN_ID=${RHEO_RUN_ID:-r$(date +%Y%m%d_%H%M%S)}
+export RHEO_RUN_ID="$RUN_ID"
+export PYTHONPATH="$REPO_DIR/bench/m0${PYTHONPATH:+:$PYTHONPATH}"
 
 run_training() {
   "$PYTHON" -m verl.trainer.main_ppo "$@"
 }
-# calculate_log_probs=true: vLLM 返回 token logprobs（trace 带 token_logprob，W03 消失）；
-# 默认 decoupled 模式下 actor 仍重算 old_log_probs，训练语义不变
 
-ATTEMPTS_LEFT=${MAX_ATTEMPTS:-6}
-
+ATTEMPT=0
+LAST_SIG=""
 while true; do
-  echo "[run_grpo] attempt util=$UTIL (free_gb=$FREE, 剩余重试 $((ATTEMPTS_LEFT - 1)))"
-  ATTEMPT_LOG="$RESULTS/logs/attempt-$(date +%H%M%S)-$$.log"
+  ATTEMPT=$((ATTEMPT + 1))
+  ATTEMPT_LOG="$LOG_DIR/attempt-${RUN_ID}-$(printf %03d "$ATTEMPT").log"
+  # TASK-A2 F21：attempt 日志轮转，只留最近 10 份
+  ls -t "$LOG_DIR"/attempt-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+  {
+    # TASK-A2 G7：最终生效参数回显，永远在日志首行
+    echo "[run_grpo] RUN_ID=$RUN_ID attempt=$ATTEMPT util=$UTIL micro=$MICRO seqs=$SEQS batch=$BATCH steps=$STEPS model=$MODEL ckpt=$CKPT_DIR/$EXP spill=$SPILL_ROOT/$RUN_ID"
+  } > "$ATTEMPT_LOG"
   rc=0
   run_training \
   data.train_files="$DATA_DIR/train.parquet" \
@@ -100,61 +107,74 @@ while true; do
   actor_rollout_ref.actor.optim.optimizer_impl=bitsandbytes.optim \
   actor_rollout_ref.actor.optim.optimizer=AdamW8bit \
   actor_rollout_ref.actor.ppo_mini_batch_size=8 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="$MICRO" \
   actor_rollout_ref.actor.fsdp_config.param_offload=true \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.n="$ROLLOUT_N" \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="$MICRO" \
   actor_rollout_ref.rollout.calculate_log_probs=true \
   actor_rollout_ref.rollout.gpu_memory_utilization="$UTIL" \
   actor_rollout_ref.rollout.enforce_eager=true \
   actor_rollout_ref.rollout.max_model_len=1024 \
-  actor_rollout_ref.rollout.max_num_seqs=48 \
+  actor_rollout_ref.rollout.max_num_seqs="$SEQS" \
   custom_reward_function.path="$REPO_DIR/bench/m0/gsm8k_reward.py" \
   custom_reward_function.name=compute_score \
   trainer.nnodes=1 \
   trainer.n_gpus_per_node=1 \
-  actor_rollout_ref.nccl_timeout=7200 \
   trainer.total_training_steps="$STEPS" \
   trainer.total_epochs=10 \
   trainer.val_before_train="$VAL_BEFORE_TRAIN" \
   trainer.test_freq="$TEST_FREQ" \
   trainer.save_freq="${SAVE_FREQ:-5}" \
+  trainer.max_ckpt_to_keep="${MAX_CKPT_TO_KEEP:-2}" \
   trainer.logger='[console,tensorboard]' \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \
-  trainer.default_local_dir="$CKPT_DIR/$EXP" > "$ATTEMPT_LOG" 2>&1 || rc=$?
+  trainer.default_local_dir="$CKPT_DIR/$EXP" >> "$ATTEMPT_LOG" 2>&1 || rc=$?
   tail -40 "$ATTEMPT_LOG"
   if [ "$rc" -eq 0 ]; then
-    echo "[run_grpo] training finished ok"
+    echo "[run_grpo] training finished ok (RUN_ID=$RUN_ID)"
     break
   fi
-  echo "[run_grpo] attempt failed (rc=$rc)" >&2
-  ATTEMPTS_LEFT=$((ATTEMPTS_LEFT - 1))
-  if [ "$ATTEMPTS_LEFT" -le 0 ]; then
-    echo "[run_grpo] retry budget exhausted; giving up (full log: $ATTEMPT_LOG)" >&2
+  echo "[run_grpo] attempt $ATTEMPT failed (rc=$rc)" >&2
+
+  # ---- TASK-A2 E15/C11：失败分类 ----
+  if grep -qE "ModuleNotFoundError|ImportError|ConfigCompositionException|not in struct|FileNotFoundError" "$ATTEMPT_LOG"; then
+    echo "[run_grpo] FATAL: 导入/配置/路径类错误，重试无意义。根因：" >&2
+    grep -m2 -E "ModuleNotFoundError|ImportError|ConfigCompositionException|not in struct|FileNotFoundError" "$ATTEMPT_LOG" >&2
+    echo "[run_grpo] 完整日志: $ATTEMPT_LOG" >&2
     exit 1
   fi
-  # WDDM 瞬态家族（显存检查失败 / CUDA unknown / device not ready / 分配器断言）
-  # 都值得重试；resume_mode=auto 会从最新 checkpoint 续跑
-  if grep -q "Free memory on device" "$ATTEMPT_LOG"; then
-    if [ "$UTIL" = "0.55" ]; then
-      echo "[run_grpo] util already at floor 0.55 and still failing; giving up" >&2
+
+  if grep -qE "Free memory on device|CUDA out of memory|OutOfMemoryError" "$ATTEMPT_LOG"; then
+    # 降档梯子：seqs 减半 → micro 减半 → util 降 0.06（下限 0.45）
+    # 同签名（连续 OOM）快速跳档：一次降两档
+    if [ "$SEQS" -gt 12 ]; then
+      SEQS=$((SEQS / 2))
+    elif [ "$MICRO" -gt 1 ]; then
+      MICRO=$((MICRO / 2))
+    elif [ "$UTIL" != "0.45" ]; then
+      UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.45, $UTIL - 0.06):.2f}')")
+    else
+      echo "[run_grpo] OOM 梯子到底仍失败；放弃（完整日志: $ATTEMPT_LOG）" >&2
       exit 1
     fi
-    UTIL=$(RHEO_TRACE=0 "$PYTHON" -c "print(f'{max(0.55, $UTIL - 0.06):.2f}')")
-  elif grep -qE "CUDA error|device not ready|INTERNAL ASSERT|invalid resource handle" "$ATTEMPT_LOG"; then
-    echo "[run_grpo] transient CUDA/driver failure detected; retrying with same util" >&2
-  elif grep -q "collective operation timeout\|ActorDiedError" "$ATTEMPT_LOG"; then
-    echo "[run_grpo] NCCL/actor timeout under GPU contention; retrying with same util" >&2
+    if [ "$LAST_SIG" = "oom" ]; then
+      if [ "$SEQS" -gt 12 ]; then SEQS=$((SEQS / 2)); elif [ "$MICRO" -gt 1 ]; then MICRO=$((MICRO / 2)); fi
+    fi
+    echo "[run_grpo] OOM → 降档至 util=$UTIL micro=$MICRO seqs=$SEQS" >&2
+    LAST_SIG="oom"
+  elif grep -qE "device not ready|INTERNAL ASSERT|invalid resource handle|Watchdog|ActorDiedError|CUDA error" "$ATTEMPT_LOG"; then
+    echo "[run_grpo] 瞬态 CUDA/驱动/NCCL 失败；同档重试" >&2
+    LAST_SIG=""
   else
-    echo "[run_grpo] unrecognized failure; giving up (full log: $ATTEMPT_LOG)" >&2
+    echo "[run_grpo] 未识别的失败，放弃（完整日志: $ATTEMPT_LOG）" >&2
     exit 1
   fi
+
   # 清掉残留 ray 集群，避免下次 attempt 挂到死 worker 上
   "$PYTHON" -m ray stop --force >/dev/null 2>&1 || true
   sleep 15
 done
-

@@ -51,7 +51,7 @@ def load_spill(spill_dir: Path) -> list[dict]:
 def main() -> None:
     here = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser()
-    ap.add_argument("--spill-dir", type=Path, required=True)
+    ap.add_argument("--spill-dir", type=Path, required=True, help="单个 run_id 的 spill 目录")
     ap.add_argument(
         "--out",
         type=Path,
@@ -59,11 +59,42 @@ def main() -> None:
     )
     ap.add_argument("--model", default="Qwen2.5-1.5B-Instruct")
     ap.add_argument("--n-workers", type=int, default=8)
+    ap.add_argument(
+        "--expected-steps",
+        type=int,
+        default=None,
+        help="计划训练步数（如 40）；与 weight_sync 覆盖步数不符时报 WARNING",
+    )
     args = ap.parse_args()
 
     raw = load_spill(args.spill_dir)
     if not raw:
         raise SystemExit(f"no spill events under {args.spill_dir}")
+
+    # TASK-A2 D14/G1：按 run_id 合并，拒绝混入历史 run 的 spill
+    run_ids = {e.get("run_id") for e in raw}
+    run_ids.discard(None)
+    if len(run_ids) > 1:
+        raise SystemExit(
+            f"REFUSED: spill 目录混入多个 run_id ({sorted(run_ids)})——"
+            "TASK-A2 D14 要求每个 run 独立目录、独立合并"
+        )
+    run_id = run_ids.pop() if run_ids else "r-m0baseline"
+
+    # 覆盖步数注记：weight_sync 的 trainer_step 集合（热身同步记 0，不计入）
+    covered = sorted({int(e["trainer_step"]) for e in raw if e["type"] == "weight_sync"} - {0})
+    if args.expected_steps:
+        expected = set(range(1, args.expected_steps + 1))
+        missing = sorted(expected - set(covered))
+        if missing:
+            print(
+                f"WARNING: covered_steps 缺口：缺 {missing[:10]}"
+                f"{'...' if len(missing) > 10 else ''}（{len(missing)} 步无 weight_sync 事件）"
+            )
+    lo = covered[0] if covered else 0
+    hi = covered[-1] if covered else 0
+    print(f"covered_steps: {lo}-{hi} ({len(covered)} 步)")
+
     # 先把区间事件的时间戳归一到 t_end（规格 §4.0），再排序——否则排序后被
     # 改写的 ts 会重新失序（E04）
     for ev in raw:
@@ -155,7 +186,7 @@ def main() -> None:
     run_start = {
         "type": "run_start",
         "ts": raw[0]["ts"],
-        "run_id": "r-m0baseline",
+        "run_id": run_id,
         "format": "rheotrace-jsonl",
         "schema_version": 0,
         "initial_version": 0,
@@ -166,6 +197,7 @@ def main() -> None:
         "meta": {
             "spill_dir": str(args.spill_dir),
             "instrumentation": "bench/m0/rheo_trace_hooks.py",
+            "covered_steps": covered,
         },
     }
     out_events = [run_start]
@@ -178,7 +210,7 @@ def main() -> None:
         {
             "type": "run_end",
             "ts": max(e["ts"] for e in raw) + 1,
-            "run_id": "r-m0baseline",
+            "run_id": run_id,
             "summary": {
                 "segments": sum(1 for e in raw if e["type"] == "segment_start"),
                 "weight_syncs": len(syncs),

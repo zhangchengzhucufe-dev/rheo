@@ -305,3 +305,103 @@ def test_merge_derives_schedule_spans(tmp_path: Path) -> None:
     assert "seg_id" not in sched[0], "schedule is engine-level (no seg_id)"
     r = validate(out, strict=False)
     assert r.ok
+
+
+def test_merge_refuses_mixed_run_ids(tmp_path: Path) -> None:
+    """TASK-A2 D14/G1: spill 目录混入两个 run_id 必须被拒绝。"""
+    spill_dir = tmp_path / "spill"
+    spill_dir.mkdir()
+    t0 = time_ns()
+
+    def spill(pid: int, ts: int, run_id: str, **ev: dict) -> None:
+        ev.update({"type": ev.get("type"), "ts": ts, "run_id": run_id})
+        with open(spill_dir / f"spill-{pid}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+
+    spill(
+        1,
+        t0,
+        "r-aaa",
+        type="weight_sync",
+        version=1,
+        t_start=t0,
+        t_end=t0 + 100,
+        mode="full",
+        trainer_step=1,
+    )
+    spill(
+        2,
+        t0 + 200,
+        "r-bbb",
+        type="weight_sync",
+        version=1,
+        t_start=t0 + 100,
+        t_end=t0 + 200,
+        mode="full",
+        trainer_step=2,
+    )
+
+    out = tmp_path / "trace.jsonl"
+    r = subprocess.run(
+        [sys.executable, str(MERGE), "--spill-dir", str(spill_dir), "--out", str(out)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0
+    assert "REFUSED" in r.stderr + r.stdout
+
+
+def test_merge_reports_covered_steps(tmp_path: Path) -> None:
+    """TASK-A2 D14: covered_steps 注记 + 缺步 WARNING。"""
+    spill_dir = tmp_path / "spill"
+    spill_dir.mkdir()
+    t0 = time_ns()
+
+    def spill(pid: int, ts: int, **ev: dict) -> None:
+        ev.update({"type": ev.get("type"), "ts": ts, "run_id": "r-x"})
+        with open(spill_dir / f"spill-{pid}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+
+    # 只有 step 1 和 step 3 的同步：step 2 缺口必须被报告
+    spill(
+        1,
+        t0 + 100,
+        type="weight_sync",
+        version=1,
+        t_start=t0,
+        t_end=t0 + 100,
+        mode="full",
+        trainer_step=1,
+    )
+    spill(
+        1,
+        t0 + 300,
+        type="weight_sync",
+        version=2,
+        t_start=t0 + 200,
+        t_end=t0 + 300,
+        mode="full",
+        trainer_step=3,
+    )
+
+    out = tmp_path / "trace.jsonl"
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(MERGE),
+            "--spill-dir",
+            str(spill_dir),
+            "--out",
+            str(out),
+            "--expected-steps",
+            "3",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "covered_steps: 1-3 (2 步)" in r.stdout
+    assert "WARNING" in r.stdout and "缺 [2]" in r.stdout
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    run_start = next(e for e in events if e["type"] == "run_start")
+    assert run_start["meta"]["covered_steps"] == [1, 3]
