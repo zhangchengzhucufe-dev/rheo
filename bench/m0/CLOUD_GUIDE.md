@@ -68,10 +68,14 @@ tail -f train.log
 ## 5. 收尾
 
 ```bash
-python bench/m0/plot_reward.py                      # reward 曲线
+ls ~/rheo-scratch/spill/                 # 列出所有启动目录（崩溃续跑会有多个）
+python bench/m0/plot_reward.py           # reward 曲线
+# 合并：把本次训练的全部启动目录依次传入（崩溃续跑的各段会合成一条完整 trace）
 python bench/m0/merge_trace.py \
-  --spill-dir ~/rheo-scratch/spill/<RUN_ID> \
-  --expected-steps 40                               # 必须 covered_steps: 1-40 (40 步)
+  --spill-dir ~/rheo-scratch/spill/<RUN_ID_1> \
+  --spill-dir ~/rheo-scratch/spill/<RUN_ID_2> \
+  --expected-steps 40
+# 必须 covered_steps 覆盖 1-40 且 validate ok=True
 # 产物：bench/traces/m0-baseline.rheotrace.jsonl + bench/results/m0-baseline/reward_curve.png
 ```
 

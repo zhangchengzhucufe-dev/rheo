@@ -405,3 +405,112 @@ def test_merge_reports_covered_steps(tmp_path: Path) -> None:
     events = [json.loads(line) for line in out.read_text().splitlines()]
     run_start = next(e for e in events if e["type"] == "run_start")
     assert run_start["meta"]["covered_steps"] == [1, 3]
+
+
+def test_merge_accepts_resumed_launches(tmp_path: Path) -> None:
+    """崩溃续跑：两个启动目录（各一个 run_id）合并为一条完整 trace，
+    事件 run_id 统一、launch 溯源保留为 launch_run_id 附加字段。"""
+    la, lb = tmp_path / "launchA", tmp_path / "launchB"
+    la.mkdir()
+    lb.mkdir()
+    t0 = time_ns()
+
+    def spill(d: Path, ts: int, launch: str, **ev: dict) -> None:
+        ev.update({"type": ev.get("type"), "ts": ts, "run_id": launch})
+        with open(d / "spill-1.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+
+    spill(
+        la,
+        t0 + 100,
+        "rA",
+        type="weight_sync",
+        version=1,
+        t_start=t0,
+        t_end=t0 + 100,
+        mode="full",
+        trainer_step=1,
+    )
+    spill(
+        la,
+        t0 + 500,
+        "rA",
+        type="segment_start",
+        seg_id="s1",
+        group_id="g1",
+        t_start=t0 + 150,
+        n_prompt_tokens=10,
+        birth_version=1,
+    )
+    spill(
+        la,
+        t0 + 700,
+        "rA",
+        type="segment_end",
+        seg_id="s1",
+        state="finished",
+        from_state="running",
+        t_end=t0 + 700,
+        n_gen_tokens=8,
+        birth_version=1,
+        end_version=1,
+    )
+    spill(
+        lb,
+        t0 + 900,
+        "rB",
+        type="weight_sync",
+        version=2,
+        t_start=t0 + 800,
+        t_end=t0 + 900,
+        mode="full",
+        trainer_step=2,
+    )
+    spill(
+        lb,
+        t0 + 1200,
+        "rB",
+        type="segment_start",
+        seg_id="s2",
+        group_id="g2",
+        t_start=t0 + 950,
+        n_prompt_tokens=8,
+        birth_version=2,
+    )
+    spill(
+        lb,
+        t0 + 1400,
+        "rB",
+        type="segment_end",
+        seg_id="s2",
+        state="finished",
+        from_state="running",
+        t_end=t0 + 1400,
+        n_gen_tokens=4,
+        birth_version=2,
+        end_version=2,
+    )
+
+    out = tmp_path / "trace.jsonl"
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(MERGE),
+            "--spill-dir",
+            str(la),
+            "--spill-dir",
+            str(lb),
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "ok=True errors=0" in r.stdout
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    assert all(e["run_id"] == events[0]["run_id"] for e in events), "run_id 必须统一"
+    resumed = [e for e in events if e.get("launch_run_id") == "rB"]
+    assert len(resumed) >= 2, "续跑 launch 的事件必须保留 launch_run_id 溯源"
+    steps = {e["trainer_step"] for e in events if e["type"] == "weight_sync"}
+    assert steps == {1, 2}

@@ -12,8 +12,12 @@ $RHEO_TRACE_DIR/spill-<pid>.jsonl (wall-clock ns). The merger:
    (spec §5.1.2: effective version = last weight_sync whose t_end <= t),
 4. writes the final JSONL via rheotrace.write() and runs rheotrace.validate.
 
+每次启动（含崩溃后续跑）各占一个 run_id 子目录：把同一次训练的所有启动目录
+依次传入 --spill-dir（可多次），按时间序合成一条完整 trace；单个目录内混入
+多个 run_id 会被拒绝（TASK-A2 D14）。
+
 Usage:
-    python bench/m0/merge_trace.py --spill-dir DIR [--out FILE]
+    python bench/m0/merge_trace.py --spill-dir DIR [--spill-dir DIR2 ...] [--out FILE]
 """
 
 import argparse
@@ -51,7 +55,13 @@ def load_spill(spill_dir: Path) -> list[dict]:
 def main() -> None:
     here = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser()
-    ap.add_argument("--spill-dir", type=Path, required=True, help="单个 run_id 的 spill 目录")
+    ap.add_argument(
+        "--spill-dir",
+        type=Path,
+        action="append",
+        required=True,
+        help="spill 目录，可多次传入（同一次训练的每次启动各一个，按时间序合并）",
+    )
     ap.add_argument(
         "--out",
         type=Path,
@@ -67,19 +77,26 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    raw = load_spill(args.spill_dir)
+    raw: list[dict] = []
+    dir_run_ids: list[str] = []
+    for d in args.spill_dir:
+        evs = load_spill(d)
+        if not evs:
+            raise SystemExit(f"no spill events under {d}")
+        ids = {e.get("run_id") for e in evs}
+        ids.discard(None)
+        if len(ids) > 1:
+            raise SystemExit(
+                f"REFUSED: {d} 内混入多个 run_id ({sorted(ids)})——"
+                "TASK-A2 D14 要求每次启动一个 run_id 目录；"
+                "崩溃续跑的多个启动目录请依次多次传 --spill-dir"
+            )
+        rid = ids.pop() if ids else f"r-unnamed-{d.name}"
+        dir_run_ids.append(rid)
+        raw.extend(evs)
     if not raw:
-        raise SystemExit(f"no spill events under {args.spill_dir}")
-
-    # TASK-A2 D14/G1：按 run_id 合并，拒绝混入历史 run 的 spill
-    run_ids = {e.get("run_id") for e in raw}
-    run_ids.discard(None)
-    if len(run_ids) > 1:
-        raise SystemExit(
-            f"REFUSED: spill 目录混入多个 run_id ({sorted(run_ids)})——"
-            "TASK-A2 D14 要求每个 run 独立目录、独立合并"
-        )
-    run_id = run_ids.pop() if run_ids else "r-m0baseline"
+        raise SystemExit("no spill events")
+    run_id = dir_run_ids[0]
 
     # 覆盖步数注记：weight_sync 的 trainer_step 集合（热身同步记 0，不计入）
     covered = sorted(
@@ -197,7 +214,7 @@ def main() -> None:
         "clock": "wall_ns_epoch",
         "n_workers": args.n_workers,
         "meta": {
-            "spill_dir": str(args.spill_dir),
+            "spill_dirs": [str(d) for d in args.spill_dir],
             "instrumentation": "bench/m0/rheo_trace_hooks.py",
             "covered_steps": covered,
         },
@@ -205,7 +222,11 @@ def main() -> None:
     out_events = [run_start]
     for ev in raw:
         clean = {k: v for k, v in ev.items() if k not in ("fmt", "pid")}
-        clean.setdefault("run_id", run_start["run_id"])
+        # 统一覆盖为最终 run_id（spill 里的启动级 run_id 是合并前的簿记，
+        # 保留在 launch_run_id 附加字段便于溯源；规格允许任意附加字段）
+        clean["run_id"] = run_start["run_id"]
+        if ev.get("run_id") and ev["run_id"] != run_start["run_id"]:
+            clean["launch_run_id"] = ev["run_id"]
         out_events.append(clean)
     gen_tokens = sum(e.get("n_gen_tokens", 0) for e in raw if e["type"] == "segment_end")
     out_events.append(
