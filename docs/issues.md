@@ -1,5 +1,9 @@
 # 跨会话问题日志
 
+> 本文件是 AI 会话间的**内部**协作日志；面向社区的可追踪 bug 一律立成
+> [GitHub Issues](https://github.com/zhangchengzhucufe-dev/rheo/issues)（模板见 `.github/ISSUE_TEMPLATE/`），
+> 此处只留一行指针。复盘类问题见 `docs/postmortems/` 与对应 tracking issue。
+
 发现**别人板块**的问题（坑、接口不对、规格缺失）：记在这里，不要顺手实现。
 自己板块的 bug 直接修。
 
