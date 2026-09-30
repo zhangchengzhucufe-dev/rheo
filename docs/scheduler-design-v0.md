@@ -179,6 +179,7 @@ GRPO/DAPO 的优势在组内归一化，组是数据有效性单位：组内成�
 - 批的装配单位是**整组**：一个 batch 含 k 个完整组（k ≥ 1），**禁止把组拆到多个批**；
 - 装配顺序：待派组按提交序（FIFO）；policy 可在 D1 通过不派发候选组来表达错峰
   （返回 `continue` 即"本波不派"），显式错峰策略由 S2 在 harness 里实现，引擎不内置；
+  适配层经 `Scheduler.pending_groups()` 取候选清单喂 `plan_batch`（不自行维护派发账本）；
 - 容量约束：k 的上限由 KV 预算推得——`Σ_group (G × E[max_new_tokens])` 不超过当前可用 KV 池
   （预算表见 §9）；超限则减 k，不拆组；
 - **queued 初态**：submit 时组内段登记为 `queued`（已登记未派发；trace 上无存在——`segment_start`
