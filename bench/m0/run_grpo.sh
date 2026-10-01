@@ -82,9 +82,14 @@ run_training() {
 }
 
 ATTEMPT=0
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-8}
 LAST_SIG=""
 while true; do
   ATTEMPT=$((ATTEMPT + 1))
+  if [ "$ATTEMPT" -gt "$MAX_ATTEMPTS" ]; then
+    echo "[run_grpo] attempt 预算（$MAX_ATTEMPTS）耗尽；放弃（supervisor 会整批重启）" >&2
+    exit 1
+  fi
   ATTEMPT_LOG="$LOG_DIR/attempt-${RUN_ID}-$(printf %03d "$ATTEMPT").log"
   # TASK-A2 F21：attempt 日志轮转，只留最近 10 份
   # 轮转：只留最近 10 份（|| true 防 set -e 在首次无匹配时杀死脚本）
@@ -173,12 +178,18 @@ while true; do
     fi
     echo "[run_grpo] OOM → 降档至 util=$UTIL micro=$MICRO seqs=$SEQS" >&2
     LAST_SIG="oom"
-  elif grep -qE "device not ready|INTERNAL ASSERT|invalid resource handle|Watchdog|ActorDiedError|CUDA error" "$ATTEMPT_LOG"; then
+  elif grep -qE "device not ready|INTERNAL ASSERT|invalid resource handle|Watchdog|ActorDiedError|CUDA error|worker process has died|connection error code|SYSTEM_ERROR" "$ATTEMPT_LOG"; then
     echo "[run_grpo] 瞬态 CUDA/驱动/NCCL 失败；同档重试" >&2
     LAST_SIG=""
+  elif ! grep -q "Training Progress" "$ATTEMPT_LOG"; then
+    # 无错误签名且训练从未开始：worker 静默死亡（dxg/驱动层，输出被截断），
+    # 属环境瞬态，重试
+    echo "[run_grpo] 训练未开始即静默死亡（无错误签名）；按瞬态重试" >&2
   else
-    echo "[run_grpo] 未识别的失败，放弃（完整日志: $ATTEMPT_LOG）" >&2
-    exit 1
+    # 无文字签名的失败（原生崩溃/驱动中止）：一律按瞬态重试。
+    # 真正不可重试的（配置/导入/路径）已在最前面的 FATAL 分支立即终止；
+    # 重试总量由 MAX_ATTEMPTS 封顶，不会无限烧钱
+    echo "[run_grpo] 未识别的失败（无签名，疑似驱动/硬件瞬态）；重试" >&2
   fi
 
   # 清掉残留 ray 集群，避免下次 attempt 挂到死 worker 上
