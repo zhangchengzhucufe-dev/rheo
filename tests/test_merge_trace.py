@@ -514,3 +514,105 @@ def test_merge_accepts_resumed_launches(tmp_path: Path) -> None:
     assert len(resumed) >= 2, "续跑 launch 的事件必须保留 launch_run_id 溯源"
     steps = {e["trainer_step"] for e in events if e["type"] == "weight_sync"}
     assert steps == {1, 2}
+
+
+def test_merge_accepts_dangling_segment_from_crash(tmp_path: Path) -> None:
+    """崩溃在生成中途：launch A 留下无 segment_end 的悬空段，续跑 launch B
+    重新生成。合并产物必须 validate 通过（W02 警告可接受）。"""
+    ca, cb = tmp_path / "crashA", tmp_path / "crashB"
+    ca.mkdir()
+    cb.mkdir()
+    t0 = time_ns()
+
+    def spill(d: Path, ts: int, launch: str, **ev: dict) -> None:
+        ev.update({"type": ev.get("type"), "ts": ts, "run_id": launch})
+        with open(d / "spill-1.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
+
+    spill(
+        ca,
+        t0 + 100,
+        "rA",
+        type="weight_sync",
+        version=1,
+        t_start=t0,
+        t_end=t0 + 100,
+        mode="full",
+        trainer_step=1,
+    )
+    spill(
+        ca,
+        t0 + 150,
+        "rA",
+        type="segment_start",
+        seg_id="s-dangling",
+        group_id="g1",
+        t_start=t0 + 150,
+        n_prompt_tokens=10,
+    )
+    spill(
+        ca,
+        t0 + 400,
+        "rA",
+        type="phase_span",
+        seg_id="s-dangling",
+        phase="decode",
+        t_start=t0 + 150,
+        t_end=t0 + 400,
+        n_tokens=30,
+    )
+    spill(
+        cb,
+        t0 + 600,
+        "rB",
+        type="segment_start",
+        seg_id="s-complete",
+        group_id="g1",
+        t_start=t0 + 600,
+        n_prompt_tokens=10,
+    )
+    spill(
+        cb,
+        t0 + 1000,
+        "rB",
+        type="segment_end",
+        seg_id="s-complete",
+        state="finished",
+        from_state="running",
+        t_end=t0 + 1000,
+        n_gen_tokens=50,
+    )
+    spill(
+        cb,
+        t0 + 1200,
+        "rB",
+        type="weight_sync",
+        version=2,
+        t_start=t0 + 1000,
+        t_end=t0 + 1200,
+        mode="full",
+        trainer_step=2,
+    )
+
+    out = tmp_path / "trace.jsonl"
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(MERGE),
+            "--spill-dir",
+            str(ca),
+            "--spill-dir",
+            str(cb),
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "ok=True errors=0" in r.stdout
+    events = [json.loads(line) for line in out.read_text().splitlines()]
+    dangling = [
+        e for e in events if e.get("seg_id") == "s-dangling" and e["type"] == "segment_start"
+    ]
+    assert dangling, "悬空段必须保留在 trace 中（它是崩溃证据）"
