@@ -16,6 +16,12 @@
 set -euo pipefail
 
 PYTHON=${PYTHON:-python}
+# PATH 上的 python 没有 torch（venv 未激活）时，回退到已知 venv 路径，
+# 免得烧一次失败 attempt 才被 E15 拦下
+if ! "$PYTHON" -c "import torch" >/dev/null 2>&1 && [ -x "$HOME/tools/venvs/rheo/bin/python" ]; then
+  PYTHON="$HOME/tools/venvs/rheo/bin/python"
+  echo "[run_grpo] PATH python 无 torch，回退到 $PYTHON"
+fi
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL=${MODEL:-$HOME/models/Qwen2.5-1.5B-Instruct}
 DATA_DIR=${DATA_DIR:-$HOME/datasets/rheo/gsm8k}
