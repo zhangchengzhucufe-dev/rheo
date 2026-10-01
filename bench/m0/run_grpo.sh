@@ -140,7 +140,7 @@ while true; do
   trainer.val_before_train="$VAL_BEFORE_TRAIN" \
   trainer.test_freq="$TEST_FREQ" \
   trainer.save_freq="${SAVE_FREQ:-5}" \
-  trainer.max_ckpt_to_keep="${MAX_CKPT_TO_KEEP:-2}" \
+  +trainer.max_actor_ckpt_to_keep="${MAX_CKPT_TO_KEEP:-2}" \
   trainer.logger='[console,tensorboard]' \
   trainer.project_name=rheo-m0 \
   trainer.experiment_name="$EXP" \

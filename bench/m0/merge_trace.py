@@ -79,7 +79,14 @@ def main() -> None:
 
     raw: list[dict] = []
     dir_run_ids: list[str] = []
+    seen_dirs: set[str] = set()
     for d in args.spill_dir:
+        # 重复目录去重：同一目录传两次会把事件翻倍（E07/E13 假错）
+        key = str(d.resolve()) if d.exists() else str(d)
+        if key in seen_dirs:
+            print(f"note: 忽略重复的 spill 目录 {d}")
+            continue
+        seen_dirs.add(key)
         evs = load_spill(d)
         if not evs:
             raise SystemExit(f"no spill events under {d}")
