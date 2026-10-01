@@ -113,7 +113,7 @@ class Observation:
     current_version: int  # 当前生效权重版本
     pending_sync: bool  # True = weight_sync 安全点已到/正在逼近（D2 上下文）
     segments: tuple[SegmentView, ...]  # 全部在途段
-    groups: tuple[GroupView, ...]  # 全部未收尾组（含待派与在途）
+    groups: tuple[GroupView, ...]  # 全部含在途段的组（queued-only 组不在内，待派信息走 candidates）
     memory: MemoryWatermark
     candidates: tuple[str, ...]  # D1 时：可派组 id 列表；其余决策点为空
 ```
