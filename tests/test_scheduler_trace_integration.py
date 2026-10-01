@@ -120,7 +120,13 @@ class TraceAdapter:
         applied: list[Decision] = []
         for _ in range(32):
             obs = self.sch.observation(
-                current_version, 0, 10**9, t_now_ns=self.t, pending_sync=pending_sync
+                current_version,
+                0,
+                10**9,
+                t_now_ns=self.t,
+                pending_sync=pending_sync,
+                # §4.2 D1 上下文；V1Policy 不消费，批组装走 plan_batch
+                candidates=self.sch.pending_groups(),
             )
             d = self.policy(obs)
             validate_decision(obs, d)
