@@ -1,4 +1,4 @@
-"""RheoTrace validator：规格 docs/rheotrace-spec-v0.md §6 规则表（E01–E18 / W01–W09）的实现。"""
+"""RheoTrace validator：规格 docs/rheotrace-spec-v0.md §6 规则表（E01–E18 / W01–W10）的实现。"""
 
 from __future__ import annotations
 
@@ -129,11 +129,19 @@ def _iter_events(source: Source, rep: ValidationReport) -> Iterator[tuple[int, d
         yield from enumerate(source, 1)
 
 
-def validate(source: Source, *, strict: bool = True) -> ValidationReport:
+def validate(
+    source: Source,
+    *,
+    strict: bool = True,
+    expected_steps: Iterable[int] | None = None,
+) -> ValidationReport:
     """按规格 §6 校验一份 trace。
 
     strict=True：存在任一 error 即抛 ValidationError（携带完整报告）；
     strict=False：总是返回报告。
+    expected_steps：训练日志声明的 step 集合（如 range(1, 41)）。给出时对照
+    weight_sync.trainer_step 的覆盖集合，缺失步报 W10（§6）；报告的
+    ``covered_steps`` 字段无论是否给出该参数都会填充，供 merge 头部注记复用。
     """
     if isinstance(source, dict):
         raise TypeError(
@@ -142,6 +150,17 @@ def validate(source: Source, *, strict: bool = True) -> ValidationReport:
         )
     rep = ValidationReport()
     _check(source, rep)
+    if expected_steps is not None:
+        expected = sorted({int(s) for s in expected_steps})
+        missing = sorted(set(expected) - set(rep.covered_steps))
+        if missing:
+            shown = ", ".join(str(s) for s in missing[:20])
+            more = f" …等共 {len(missing)} 步" if len(missing) > 20 else ""
+            rep.add_warning(
+                "W10",
+                f"step 覆盖缺口：预期 {len(expected)} 步、实际覆盖 {len(rep.covered_steps)} 步，"
+                f"缺失 [{shown}{more}]",
+            )
     if strict:
         rep.raise_if_errors()
     return rep
@@ -159,6 +178,7 @@ def _check(source: Source, rep: ValidationReport) -> None:
     n_syncs = 0
     sync_windows: list[tuple[int, int, int]] = []  # (t_start, t_end, version)
     segs: dict[str, _Seg] = {}
+    trainer_steps: set[int] = set()  # weight_sync.trainer_step 出现过的值（§6 W10 / covered_steps）
 
     for line, ev in _iter_events(source, rep):
         if not isinstance(ev, dict):
@@ -230,6 +250,16 @@ def _check(source: Source, rep: ValidationReport) -> None:
 
         if etype == WEIGHT_SYNC:
             version, t_start, t_end = ev["version"], ev["t_start"], ev["t_end"]
+            if "trainer_step" in ev:
+                if not _is_int(ev["trainer_step"]):
+                    rep.add_error(
+                        "E05",
+                        f"weight_sync.trainer_step 应为 int，"
+                        f"实为 {type(ev['trainer_step']).__name__}",
+                        line,
+                    )
+                else:
+                    trainer_steps.add(ev["trainer_step"])
             if ev["mode"] not in SYNC_MODES:
                 rep.add_error("E06", f"非法 mode: {ev['mode']!r}", line)
             if t_end < t_start:
@@ -435,6 +465,7 @@ def _check(source: Source, rep: ValidationReport) -> None:
     if first:
         rep.add_error("E01", "空文件：没有 run_start")
         return
+    rep.covered_steps = sorted(trainer_steps - {0})  # 0 = 热身/载入同步，不计入训练步（§4.1）
     if not saw_run_end:
         rep.add_warning("W01", "文件无 run_end 结尾（可能截断）")
     for seg in segs.values():

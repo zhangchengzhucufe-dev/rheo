@@ -10,6 +10,21 @@ from .gen import PRESETS, generate_file
 from .validate import validate
 
 
+def parse_step_spec(spec: str) -> set[int]:
+    """'1-40' / '1,2,5-10' → step 集合（--expected-steps 用）。"""
+    steps: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, sep, hi = part.partition("-")
+        if sep:
+            steps.update(range(int(lo), int(hi) + 1))
+        else:
+            steps.add(int(part))
+    return steps
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="rheotrace", description="RheoTrace v0 trace 工具")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -20,6 +35,16 @@ def main(argv: list[str] | None = None) -> int:
         "--lenient",
         action="store_true",
         help="数据问题只报告不拒绝；无法读取的文件仍以退出码 2 报告",
+    )
+    v.add_argument(
+        "--expected-steps",
+        type=parse_step_spec,
+        default=None,
+        metavar="SPEC",
+        help=(
+            "训练日志的 step 集合，如 '1-40' 或 '1,2,5-10'；"
+            "与 trace 内 weight_sync.trainer_step 对账，缺失步报 WARNING"
+        ),
     )
 
     g = sub.add_parser("gen", help="生成合成 trace")
@@ -36,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         rc = 0
         for f in args.files:
             try:
-                rep = validate(f, strict=not args.lenient)
+                rep = validate(f, strict=not args.lenient, expected_steps=args.expected_steps)
             except ValidationError as e:
                 rep = e.report
             except OSError as e:
@@ -45,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             verdict = "OK" if rep.ok else "REJECTED"
             print(f"{f}: {verdict} ({len(rep.errors)} errors, {len(rep.warnings)} warnings)")
+            if rep.covered_steps:
+                lo, hi = rep.covered_steps[0], rep.covered_steps[-1]
+                print(f"  covered_steps: {lo}-{hi} ({len(rep.covered_steps)} 步)")
             for i in rep.errors:
                 print(f"  E {i}")
             for w in rep.warnings:

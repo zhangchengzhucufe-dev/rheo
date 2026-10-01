@@ -1,8 +1,10 @@
 # RheoTrace v0 格式规格（冻结稿）
 
-> 版本 v0.1 · 2026-09-29 · 会话 B 起草，供 A（verl 插桩）与 C（分析流水线）引用
+> 版本 v0.1.2 · 2026-10-01 · 会话 B 起草，供 A（verl 插桩）与 C（分析流水线）引用
 > 状态：**M1 核心接缝冻结**。字段与语义一经 merge 不再改动；只允许向后兼容的增量（见 §8）。
 > 修订：v0.1 校准 validator 规则表与实现的一致性（E01 措辞、新增 E18/W09 落实 §4.0 的 ts 约定、initial_version 必填措辞消歧），无字段/语义变更。
+> v0.1.1 `segment_start` 增可选 `batch_id`（应 C 的 S1–S3 指标需求）。
+> v0.1.2 应 S2/TASK-A2 G1：validator 增 step 覆盖率断言（W10），`run_start.meta` 增约定键 `covered_steps` / `resume_from_step`（§8 增量，无既有字段变更）。
 > 关联：PLAN.md §1 L2 遥测 / §4 里程碑 M1；指标口径见 C 的 `docs/metrics-v0.md`。
 
 ---
@@ -135,6 +137,16 @@ C 端分析代码只依赖 `rheotrace.read`，对布局无感。
 | `clock` | string | ✓ | `"wall_ns_epoch"`（默认）\| `"mono_ns_raw"` |
 | `n_workers` | int | | rollout worker 数（DP size） |
 | `meta` | object | | 自由元数据：git sha、采样参数、GPU 型号、seed… |
+
+`meta` 约定键（v0.1.2 增量，free-form 之外的 SHOULD 约定，validator 不强制）：
+
+- `covered_steps`：`[int]`，本 run 的 `weight_sync.trainer_step` 覆盖集合（升序，不含 0——
+  0 视为热身/载入同步，不算训练步）。merge 工具应把它写进合并输出的 run_start 头部，
+  供下游（测量研究、仿真回放）不重放版本账本即可知覆盖率；`rheotrace.covered_steps()`
+  与 `ValidationReport.covered_steps` 是同一口径的单一来源。
+- `resume_from_step`：int，本 run 是从 trainer step N 崩溃续跑的（N = 续跑起点之前的最后完整步）。
+  存在该键时，`covered_steps` 从 N+1 起步是**合法**的，step 覆盖率对账（W10）应把
+  `≤ N` 的预期步从预期集合中扣除——即"预期 = 训练日志步集 − resume_from_step 之前的部分"。
 
 ### 4.2 `weight_sync`（版本账本 + 权重同步停顿）
 
@@ -321,6 +333,7 @@ finished 段 289 token 只铺了首个 64-token 块 → W03，实际须有覆盖
 | W07 | W | 整个 run 没有任何 segment；或 run 没有任何 `weight_sync` 而有 segment 产出 |
 | W08 | W | run 内 `version` 跳变 >1（§5.2，提示可能漏同步） |
 | W09 | W | 区间型事件的 `ts` 晚于其 `t_end`（迟写/缓冲未及时 flush；时间核算仍以 `t_end` 为准）。`TraceWriter` 对区间型事件自动取 `t_end` 作 ts，合规默认 |
+| W10 | W | step 覆盖缺口：调用方给出预期 step 集合（`validate(..., expected_steps=...)` / CLI `--expected-steps`），与 `weight_sync.trainer_step` 覆盖集合（不含 0）对账后存在缺失步（TASK-A2 G1：崩溃丢步不静默；续跑 run 应按 `meta.resume_from_step` 扣除续跑前的预期步） |
 
 validator 报告对象：`ValidationReport(ok, errors[], warnings[])`，每条含规则号、行号、事件摘要。
 `strict=True` 时存在任一 error 即抛 `ValidationError`（携带完整 report）。
@@ -359,6 +372,13 @@ validator 报告对象：`ValidationReport(ok, errors[], warnings[])`，每条�
 - **schema_version 0 内**：允许**新增可选字段、新增事件类型**（旧 reader 跳过未知类型/字段，W06）；
   禁止删除字段、改字段类型/语义、收窄枚举——那类破坏性变更必须 `schema_version → 1` 并新开 spec。
 - reader 对 `schema_version > 自己认识的版本`：警告并尽力解析（不硬拒）。
+- 已落地的增量（都按本节流程实施：改 spec + 改 validator/writer/reader + 测试，一个 PR 内完成）：
+  - v0.1.1（2026-09-29）：`segment_start.batch_id` 可选字段（应 C 的 S1–S3 批占用指标）。
+  - v0.1.2（2026-10-01，会话 S2 接手 §8 维护后第一单）：① validator step 覆盖率断言——
+    `validate(expected_steps=...)` 缺步报 W10，`ValidationReport.covered_steps` 与
+    `rheotrace.covered_steps()` 提供统一口径的覆盖集合，CLI `--expected-steps '1-40'`；
+    ② `run_start.meta` 约定键 `covered_steps`（merge 头部注记）与 `resume_from_step`
+    （崩溃续跑起点，见 §4.1）。二者是 meta 自由对象内的 SHOULD 约定键，旧 reader/writer 零改动即兼容。
 - 未来增量候选（**现在不定义**，只预告）：KV block 生命周期事件（M4）、
   drift 探针读数事件（M4）、投机解码 draft/验证事件与接受率（M5）、per-worker weight-sync 分解（M3）。
 - gRPC 协议（M6）将把本事件模型作为 TrajectoryService.StreamEvents 的载荷 schema，
@@ -403,7 +423,12 @@ for ev in rheotrace.iread(path):
 # 校验
 report = rheotrace.validate(path)  # 严格模式：有 error 抛 ValidationError(report)
 report = rheotrace.validate(path, strict=False)  # 宽松：返回报告不抛
+report = rheotrace.validate(path, expected_steps=range(1, 41))  # step 覆盖对账，缺步报 W10
 report.ok / report.errors / report.warnings
+report.covered_steps  # run 内 trainer_step 覆盖集合（升序，不含 0）
+
+# step 覆盖集合（与 report.covered_steps 同口径；merge 工具写头部注记用）
+steps = rheotrace.covered_steps(events)
 
 # 合成
 events = rheotrace.generate(preset="bimodal", seed=7)

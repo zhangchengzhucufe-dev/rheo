@@ -20,6 +20,7 @@ from .core import (
     RheotraceError,
     ValidationError,
     ValidationReport,
+    covered_steps,
 )
 from .gen import PRESETS, generate, generate_file
 from .reader import iread, read
@@ -44,6 +45,7 @@ __all__ = [
     "ValidationError",
     "generate",
     "generate_file",
+    "covered_steps",
     "iread",
     "read",
     "validate",

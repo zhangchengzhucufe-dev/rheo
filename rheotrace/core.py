@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 FORMAT_NAME = "rheotrace-jsonl"
@@ -82,6 +83,9 @@ class ValidationReport:
 
     errors: list[Issue] = field(default_factory=list)
     warnings: list[Issue] = field(default_factory=list)
+    # run 内 weight_sync.trainer_step 的覆盖集合（升序，不含 0 = 热身同步；§4.1 meta 约定键）。
+    # 校验结束后由 validator 填充；空文件/无 run_start 时保持为空
+    covered_steps: list[int] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -113,6 +117,20 @@ class ValidationError(RheotraceError):
 def now_ns() -> int:
     """默认时钟：wall clock 纳秒（epoch）。"""
     return time.time_ns()
+
+
+def covered_steps(events: Iterable[dict]) -> list[int]:
+    """事件流里 weight_sync.trainer_step 的覆盖集合（升序，不含 0）。
+
+    与 ValidationReport.covered_steps、run_start.meta.covered_steps（§4.1 约定键）
+    同一口径：0 视为热身/载入同步，不算训练步。merge 工具写头部注记时用它。
+    """
+    steps = {
+        ev["trainer_step"]
+        for ev in events
+        if ev.get("type") == WEIGHT_SYNC and type(ev.get("trainer_step")) is int
+    }
+    return sorted(steps - {0})
 
 
 def dumps_line(event: dict) -> str:
